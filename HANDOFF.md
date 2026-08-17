@@ -408,3 +408,67 @@ no estaba en el juego.
 - Verificado: los 6 criterios de aceptación siguen pasando.
 
 **Archivos tocados:** `index.html`, este archivo.
+
+---
+
+## 2026-08-14 — Layout que no saltaba ni desbordaba, y publicación en GitHub
+
+Manuel reportó que el texto nuevo "hace un movimiento mal que mueve las
+gráficas" y que "el juego no se ve completo en la pantalla".
+
+**Hecho — layout:**
+- **Salto de layout.** El diagnóstico marginal cambia de largo cada día
+  simulado, y como la caja crecía y se encogía, empujaba las gráficas varias
+  veces por segundo. Ahora `.marginal-hoy` tiene **alto fijo** (56 px) con el
+  espacio del mensaje más largo ya reservado, y los mensajes se acortaron para
+  caber.
+- **Bug encontrado al arreglar lo anterior:** puse `display:flex` en esa caja
+  para centrar vertical, y eso convirtió cada `<b>` del mensaje en un ítem
+  flex, desarmando la frase en columnas ("No cupieron | 245 | cajas | de hoy").
+  El texto ahora va dentro de un `<span>` propio y las clases de estado
+  (`falta`/`sobra`) se aplican a la caja, no al span.
+- **El juego no cabía.** La pantalla de juego medía ~1,180 px de alto. Tres
+  cambios: (1) la retícula `.paneles` sube las gráficas a una **tercera
+  columna** a partir de 1180 px de ancho en vez de dejarlas hasta abajo;
+  (2) la ciudad tiene tope de ancho (660 px → 198 px de alto, por la
+  proporción 320:96), antes se comía media pantalla; (3) las gráficas bajaron
+  de 360 a 300 px y las de resultados de 260 a 240. A 1440×900 ya entra
+  completo.
+
+**Hecho — publicación:**
+- `README.md` nuevo: qué se aprende, cómo jugar, estructura de archivos, cómo
+  verificar (con la tabla de criterios) y cómo recalibrar.
+- Repo inicializado y publicado en
+  **https://github.com/jmtoral/fleet-size-the-game** (público).
+- **GitHub Pages** activado desde `main` en la raíz:
+  **https://jmtoral.github.io/fleet-size-the-game/**. Funciona sin
+  configuración extra porque el entregable es un `index.html` autocontenido.
+- `.claude/settings.local.json` queda fuera del control de versiones (config
+  local de sesión, con rutas de la máquina). Sí se versionan las dos skills
+  del proyecto.
+
+**Incidentes de esta sesión (para no repetirlos):**
+- **Rompí la codificación de `index.html`.** Usé
+  `Get-Content index.html -Raw | ... | Set-Content -Encoding utf8` para un
+  reemplazo. En PowerShell 5.1 `Get-Content` lee con la codepage ANSI cuando el
+  archivo no tiene BOM, así que leyó UTF-8 como cp1252 y lo reescribió como
+  UTF-8: doble codificación en todo el archivo (`camiÃ³n`, `DÃA POR DÃA`). Se
+  reparó aplicando el inverso exacto (encode cp1252 → decode utf-8), con un
+  manejador para los bytes que .NET mapea a controles C1 y Python rechaza.
+  **Regla: en este proyecto no se editan archivos con `Set-Content`**; usar las
+  herramientas de edición o Python con `encoding='utf-8'`.
+- **Force-push en el primer commit.** El push inicial arrastró un archivo
+  temporal (`settings.local.json.tmp.…`) que Claude Code había creado. Se sacó
+  del historial con `--amend` + `--force-with-lease`; era seguro porque el repo
+  tenía un solo commit y nadie lo había clonado.
+
+**Pendiente:**
+- Sigue pendiente de sesiones anteriores: actualizar `fleet-sizing-spec.md` con
+  (1) los números corregidos de la política adaptativa, (2) el índice de día
+  base 0, (3) la sección de modo duro, (4) la ciudad en vista aérea (la sección
+  "Animación CEDIS-Ciudad" describe una franja lateral que ya no existe) y
+  (5) que la animación corre en tiempo real y no atada al tick del día.
+- Revisión visual en 375 px del layout nuevo (se verificó a 1440×900).
+
+**Archivos tocados:** `index.html`, `README.md` (nuevo), `.gitignore` (nuevo),
+este archivo.
