@@ -544,3 +544,61 @@ Cloudflare.
 
 **Archivos tocados:** `index.html`, `README.md`, `cloudflare-worker/` (nuevo),
 este archivo, y `../juego_stay_times/CLAUDE.md`.
+
+---
+
+## 2026-09-04 — El ranking pasa a ser global en Cloudflare
+
+Manuel pidió que el leaderboard fuera global en Cloudflare, como el de Stay Time.
+
+**Hecho:**
+- Worker desplegado y en producción:
+  **`https://fleet-sizing-leaderboard.jmtoralcruz.workers.dev`**, ya conectado
+  en `CONFIG.leaderboard.apiUrl`. El ranking es global.
+- **Namespace KV propio**: `FLEET_SIZING_KV`
+  (`cb31638b51264b74943b18fd60997339`), enlazado al binding `LEADERBOARD_KV`.
+  La cuenta ya tenía un namespace llamado `LEADERBOARD_KV` que es **el de Stay
+  Time y tiene partidas reales de gente**; no se tocó. El id quedó escrito en
+  `wrangler.toml` (en Stay Time está comentado y se enlazó a mano por el panel),
+  para que el despliegue sea reproducible.
+- `ADMIN_SECRET` **no** se configuró: el Worker rechaza cualquier reinicio si no
+  existe, así que el default es seguro. Se deja para que Manuel lo ponga y el
+  secreto no pase por el chat.
+
+**Dos bugs encontrados y corregidos durante la prueba en producción:**
+
+1. **El Worker perdía partidas.** Guardaba el ranking completo en una sola
+   llave y hacía leer → ordenar → escribir en cada POST. Las lecturas de KV son
+   de consistencia eventual, así que dos jugadores que guardan casi al mismo
+   tiempo leen la misma foto vieja y el segundo pisa al primero. Reproducido: de
+   4 partidas guardadas seguidas sobrevivieron 2, y reapareció una entrada ya
+   borrada. **Arreglo:** una llave por partida (`score:<id>`), con la entrada en
+   la metadata para armar el ranking con un solo `list()`. Verificado: 5
+   escrituras en paralelo sobreviven las 5.
+   **Stay Time tiene exactamente el mismo defecto** y no se tocó.
+
+2. **El cliente borraba su propio historial.** `lbAgregar` reemplazaba el
+   ranking local con la respuesta del POST. Como `list()` tarda ~15 s (medido)
+   en ver las llaves nuevas, esa respuesta llega incompleta y borraba las
+   partidas anteriores: se guardaban 4 y quedaba 1. **Arreglo:** el cliente
+   **fusiona** en vez de reemplazar (`lbFusionar`), deduplicando por huella de
+   contenido. Y la respuesta del POST mezcla el `list()` con la entrada recién
+   escrita, para que quien acaba de jugar se vea al instante.
+
+**Consecuencia documentada:** el ranking es de consistencia eventual. Quien
+juega se ve de inmediato; los demás lo ven unos segundos después. Tras un
+reinicio, las entradas pueden seguir apareciendo un rato.
+
+**Verificado en producción:** GET vacío, POST que persiste, reset rechazado sin
+secreto (403), payload inválido rechazado (400), 5 escrituras concurrentes sin
+pérdida, y una corrida real del juego en Chrome guardando 4 partidas que quedan
+las 4 tanto en el cliente como en el servidor. El nombre sigue escapándose
+(probado con `<img src=x onerror=...>`). Datos de prueba borrados.
+
+**Pendiente:**
+- Configurar `ADMIN_SECRET` si se quiere poder vaciar el ranking desde la API.
+- Considerar portar el arreglo de concurrencia al Worker de Stay Time.
+- Sigue pendiente: actualizar `fleet-sizing-spec.md` y la revisión visual a 375 px.
+
+**Archivos tocados:** `index.html`, `README.md`, `cloudflare-worker/worker.js`,
+`cloudflare-worker/wrangler.toml`, `cloudflare-worker/README.md`, este archivo.

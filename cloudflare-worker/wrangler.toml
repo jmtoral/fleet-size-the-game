@@ -2,13 +2,17 @@ name = "fleet-sizing-leaderboard"
 main = "worker.js"
 compatibility_date = "2024-11-01"
 
-# Almacenamiento persistente. Sin esto el ranking vive en memoria del isolate
-# y se pierde solo; sirve para probar, no para uso real.
-#   npx wrangler kv namespace create LEADERBOARD_KV
-# Copia el id que imprime y descomenta:
-# [[kv_namespaces]]
-# binding = "LEADERBOARD_KV"
-# id = "PEGA_AQUI_EL_ID"
+# Almacenamiento persistente del ranking.
+#
+# Namespace PROPIO de este juego: la cuenta ya tiene un "LEADERBOARD_KV" que es
+# el de Stay Time y tiene partidas reales. Se mantienen separados para poder
+# vaciar uno sin tocar el otro. El binding que ve el worker sí se llama
+# LEADERBOARD_KV; lo que cambia es el namespace al que apunta.
+[[kv_namespaces]]
+binding = "LEADERBOARD_KV"
+id = "cb31638b51264b74943b18fd60997339"   # título en Cloudflare: FLEET_SIZING_KV
 
-# El secreto de administrador NO va en este archivo (se versiona). Se sube con:
+# El secreto que protege /api/reset NO va aquí (este archivo se versiona).
+# Se sube aparte cuando se quiera habilitar el borrado del ranking:
 #   npx wrangler secret put ADMIN_SECRET
+# Sin él, el worker rechaza cualquier reinicio: es el default seguro.

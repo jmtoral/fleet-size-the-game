@@ -40,10 +40,11 @@ final (menor).
 
 Funciona en dos modos, sin configuración:
 
-- **Local** (por defecto): se guarda en `localStorage`, sirve sin conexión.
-- **Compartido**: si defines `CONFIG.leaderboard.apiUrl` apuntando al Worker de
-  `cloudflare-worker/`, se sincroniza entre jugadores. Ver
+- **Compartido** (activo): se sincroniza con un Worker de Cloudflare, así que
+  el ranking es global entre jugadores. Ver
   [`cloudflare-worker/README.md`](cloudflare-worker/README.md).
+- **Local**: si el Worker no responde o `CONFIG.leaderboard.apiUrl` es `null`,
+  el ranking sigue funcionando en `localStorage`, sin conexión.
 
 Cada entrada guarda la semilla y el modo (clásico / duro), porque partidas con
 distinta semilla o distintas reglas no son comparables entre sí.

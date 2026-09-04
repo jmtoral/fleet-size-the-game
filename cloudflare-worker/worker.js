@@ -8,6 +8,28 @@
  *
  * El juego funciona sin este Worker: `index.html` guarda en localStorage y sólo
  * sincroniza si `CONFIG.leaderboard.apiUrl` apunta aquí. Ver README.md.
+ *
+ * ---------------------------------------------------------------------------
+ * UNA LLAVE POR PARTIDA, no una lista en una sola llave.
+ *
+ * La versión anterior guardaba el ranking completo en la llave
+ * `fleet_sizing_leaderboard` y en cada POST hacía leer -> ordenar -> escribir.
+ * Con KV eso pierde partidas: las lecturas son de consistencia eventual, así
+ * que dos jugadores que guardan casi al mismo tiempo leen la misma foto vieja
+ * y el segundo sobrescribe al primero. Se reprodujo en pruebas: de 4 partidas
+ * guardadas seguidas sobrevivieron 2, y reapareció una entrada ya borrada.
+ *
+ * Ahora cada partida se escribe en su propia llave `score:<id>`, así que dos
+ * escrituras simultáneas no compiten. El ranking se arma al leer, con un
+ * `list()` que devuelve las entradas en la metadata de cada llave — una sola
+ * llamada, sin un `get()` por partida.
+ *
+ * El costo de esto es que `list()` también es de consistencia eventual: una
+ * llave recién escrita tarda ~15 s en aparecer (medido). Para que el jugador
+ * se vea a sí mismo de inmediato, la respuesta del POST mezcla lo que devuelve
+ * `list()` con la entrada recién guardada. El resto de jugadores la ven en la
+ * siguiente lectura, unos segundos después.
+ * ---------------------------------------------------------------------------
  */
 
 const CORS = {
@@ -18,12 +40,12 @@ const CORS = {
   'Content-Type': 'application/json;charset=UTF-8'
 };
 
-const CLAVE_KV = 'fleet_sizing_leaderboard';
-const TOPE_GUARDADO = 50;   // se conserva más de lo que se muestra, para el histórico
+const PREFIJO = 'score:';
 const TOPE_PUBLICO = 10;
+const TOPE_LISTA = 1000;   // máximo que devuelve un list() de KV por página
 
-// Respaldo en memoria por si el KV todavía no está enlazado. Ojo: es por
-// isolate y se pierde solo, sirve para probar, no para producción.
+// Respaldo en memoria por si el KV no está enlazado. Ojo: es por isolate y se
+// pierde solo, sirve para probar, no para producción.
 let enMemoria = [];
 
 const json = (data, status = 200) =>
@@ -39,7 +61,7 @@ export default {
 
     if (request.method === 'GET' &&
         (url.pathname === '/api/leaderboard' || url.pathname === '/')) {
-      return json(await leer(env, TOPE_PUBLICO));
+      return json((await leerTodo(env)).slice(0, TOPE_PUBLICO));
     }
 
     if (request.method === 'POST' && url.pathname === '/api/reset') {
@@ -49,23 +71,23 @@ export default {
       if (!env.ADMIN_SECRET || secreto !== env.ADMIN_SECRET) {
         return json({ error: 'No autorizado.' }, 403);
       }
-      await escribir(env, []);
-      return json({ ok: true, mensaje: 'Ranking reiniciado.' });
+      const borradas = await borrarTodo(env);
+      return json({ ok: true, borradas });
     }
 
     if (request.method === 'POST' && url.pathname === '/api/score') {
       try {
-        const body = await request.json();
-        const entrada = sanitizar(body);
+        const entrada = sanitizar(await request.json());
         if (!entrada) return json({ error: 'Payload inválido.' }, 400);
 
-        const ranking = await leer(env, TOPE_GUARDADO);
-        ranking.push(entrada);
-        ranking.sort(ordenar);
+        await guardar(env, entrada);
 
-        const top = ranking.slice(0, TOPE_GUARDADO);
-        await escribir(env, top);
-        return json(top.slice(0, TOPE_PUBLICO));
+        // `list()` todavía no ve la llave recién escrita, así que se mezcla a
+        // mano para que quien acaba de jugar se vea en el ranking al instante.
+        const lista = await leerTodo(env);
+        if (!lista.some(e => e.id === entrada.id)) lista.push(entrada);
+        lista.sort(ordenar);
+        return json(lista.slice(0, TOPE_PUBLICO));
       } catch (err) {
         return json({ error: 'Error procesando la solicitud.', detalle: err.message }, 500);
       }
@@ -91,6 +113,9 @@ function sanitizar(b) {
   const acotar = (v, min, max) => Math.min(max, Math.max(min, v));
 
   return {
+    // Identificador propio: permite mezclar sin duplicar la entrada recién
+    // escrita con la que devuelve `list()` cuando ya alcanzó a propagarse.
+    id: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10),
     nombre: b.nombre.trim().slice(0, 24) || 'Anónimo',
     balance: Math.round(acotar(num(b.balance), -10000000, 10000000)),
     servicio: +acotar(num(b.servicio), 0, 100).toFixed(1),
@@ -107,26 +132,47 @@ function sanitizar(b) {
   };
 }
 
-async function leer(env, limite) {
+async function guardar(env, entrada) {
+  if (env && env.LEADERBOARD_KV) {
+    // La llave lleva el id de la entrada: única por partida y sin coordinación
+    // entre peticiones, que es justo lo que evita que dos jugadores se pisen.
+    // La entrada va también en la metadata para que `list()` la devuelva sin
+    // tener que hacer un get() por partida.
+    await env.LEADERBOARD_KV.put(PREFIJO + entrada.id, JSON.stringify(entrada), { metadata: entrada });
+    return;
+  }
+  enMemoria.push(entrada);
+}
+
+async function leerTodo(env) {
   if (env && env.LEADERBOARD_KV) {
     try {
-      const data = await env.LEADERBOARD_KV.get(CLAVE_KV, 'json');
-      if (Array.isArray(data)) return data.slice(0, limite);
+      const entradas = [];
+      let cursor;
+      do {
+        const r = await env.LEADERBOARD_KV.list({ prefix: PREFIJO, limit: TOPE_LISTA, cursor });
+        for (const k of r.keys) if (k.metadata) entradas.push(k.metadata);
+        cursor = r.list_complete ? null : r.cursor;
+      } while (cursor);
+      return entradas.sort(ordenar);
     } catch (e) {
       console.error('Error leyendo de KV:', e);
     }
   }
-  return enMemoria.slice(0, limite);
+  return enMemoria.slice().sort(ordenar);
 }
 
-async function escribir(env, data) {
+async function borrarTodo(env) {
   if (env && env.LEADERBOARD_KV) {
-    try {
-      await env.LEADERBOARD_KV.put(CLAVE_KV, JSON.stringify(data));
-      return;
-    } catch (e) {
-      console.error('Error escribiendo en KV:', e);
-    }
+    let n = 0, cursor;
+    do {
+      const r = await env.LEADERBOARD_KV.list({ prefix: PREFIJO, limit: TOPE_LISTA, cursor });
+      for (const k of r.keys) { await env.LEADERBOARD_KV.delete(k.name); n++; }
+      cursor = r.list_complete ? null : r.cursor;
+    } while (cursor);
+    return n;
   }
-  enMemoria = data;
+  const n = enMemoria.length;
+  enMemoria = [];
+  return n;
 }

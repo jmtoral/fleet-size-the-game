@@ -458,7 +458,7 @@ const CONFIG = {
   // contra el Worker de Cloudflare. Ver cloudflare-worker/.
   leaderboard: {
     maxEntries: 10,
-    apiUrl: null,
+    apiUrl: 'https://fleet-sizing-leaderboard.jmtoralcruz.workers.dev',
     claveLocal: 'fsLeaderboard',
     claveNombre: 'fsNombre'
   },
@@ -1592,13 +1592,36 @@ function lbOrdenar(a, b) {
       || (a.deudaFinal - b.deudaFinal);
 }
 
+/* Huella de contenido para deduplicar al fusionar. No se usa un id porque el
+   cliente arma la entrada y el Worker la guarda con su propia llave: dos copias
+   de la misma partida (la local y la que devuelve el servidor) tienen que
+   reconocerse como una sola. */
+function lbHuella(e) {
+  return [e.nombre, e.balance, e.servicio, e.deudaFinal, e.dias, e.modo, e.fecha].join('|');
+}
+
+/* Fusiona dos rankings en vez de que uno pise al otro.
+   Importante: la respuesta del POST puede venir incompleta, porque el `list()`
+   de KV tarda unos segundos en ver las partidas recién escritas. Si se
+   reemplazara el ranking local con esa respuesta, se borrarían las partidas
+   anteriores del jugador. */
+function lbFusionar(a, b) {
+  const m = new Map();
+  (a || []).concat(b || []).forEach(e => { if (e) m.set(lbHuella(e), e); });
+  return Array.from(m.values()).sort(lbOrdenar).slice(0, LB.maxEntries);
+}
+
 async function lbNube() {
   if (!LB.apiUrl) return null;
   try {
     const res = await fetch(lbUrl('/api/leaderboard'), { headers: { Accept: 'application/json' } });
     if (!res.ok) return null;
     const datos = await res.json();
-    if (Array.isArray(datos)) { lbGuardarLocal(datos); return datos; }
+    if (Array.isArray(datos)) {
+      const fusion = lbFusionar(lbLocal(), datos);
+      lbGuardarLocal(fusion);
+      return fusion;
+    }
   } catch (e) { /* sin conexión: se queda con el ranking local */ }
   return null;
 }
@@ -1662,7 +1685,7 @@ async function lbAgregar(entrada) {
       body: JSON.stringify(entrada)
     });
     const datos = await res.json();
-    if (Array.isArray(datos)) lbGuardarLocal(datos);
+    if (Array.isArray(datos)) lbGuardarLocal(lbFusionar(lbLocal(), datos));
   } catch (e) { /* queda guardado en local; se sincroniza en la próxima */ }
 }
 
