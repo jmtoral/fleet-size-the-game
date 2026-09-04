@@ -32,11 +32,28 @@ dependencias: es un solo archivo autocontenido que funciona sin conexión.
   contratar camiones, más dos formas de perder antes de que acabe el año:
   quiebra por caja y pérdida del contrato por deuda acumulada.
 
+## Ranking
+
+Al cerrar el año puedes guardar tu resultado. El ranking ordena por **balance
+final**; los empates se rompen por nivel de servicio (mayor) y luego por deuda
+final (menor).
+
+Funciona en dos modos, sin configuración:
+
+- **Local** (por defecto): se guarda en `localStorage`, sirve sin conexión.
+- **Compartido**: si defines `CONFIG.leaderboard.apiUrl` apuntando al Worker de
+  `cloudflare-worker/`, se sincroniza entre jugadores. Ver
+  [`cloudflare-worker/README.md`](cloudflare-worker/README.md).
+
+Cada entrada guarda la semilla y el modo (clásico / duro), porque partidas con
+distinta semilla o distintas reglas no son comparables entre sí.
+
 ## Estructura
 
 | Archivo | Qué es |
 |---|---|
 | `index.html` | El juego completo. Único entregable. |
+| `cloudflare-worker/` | Backend opcional del ranking (Worker + KV). |
 | `fleet-sizing-spec.md` | Especificación autoritativa: fórmulas, RNG, criterios de aceptación. |
 | `verify_balance.py` | Verificación offline del modelo (sólo stdlib). |
 | `embed_portada.py` | Incrusta `portada.jfif` en `index.html` como data URI. |

@@ -472,3 +472,75 @@ gráficas" y que "el juego no se ve completo en la pantalla".
 
 **Archivos tocados:** `index.html`, `README.md` (nuevo), `.gitignore` (nuevo),
 este archivo.
+
+---
+
+## 2026-09-04 — Ranking en Fleet Sizing y CLAUDE.md de Stay Times alineado
+
+Manuel pidió dos cosas tras revisar el proyecto hermano (`../juego_stay_times`):
+alinear el `CLAUDE.md` de aquel a la realidad quitando la restricción de assets
+externos, y traer a Fleet Sizing un leaderboard como el de Stay Times, con
+Cloudflare.
+
+**Hecho — ranking en Fleet Sizing:**
+- Ranking con el mismo patrón que Stay Times: **localStorage siempre**,
+  sincronización con un Worker de Cloudflare **sólo si** hay
+  `CONFIG.leaderboard.apiUrl`. Sin backend desplegado el juego funciona igual,
+  con ranking local; los fallos de red son silencios deliberados.
+- **Orden: balance final descendente**, desempatando por nivel de servicio
+  (mayor) y deuda final (menor). El balance es el marcador que el juego ya
+  enseña, así que no se inventó una fórmula de puntos aparte.
+- La entrada guarda `semilla` y `modo` (`clasico`/`duro`) porque partidas con
+  distinta semilla o distintas reglas **no son comparables**. La tabla muestra
+  el modo como etiqueta.
+- Las partidas que terminan antes de tiempo se marcan con el motivo y el día
+  (`quiebra d156`, `sin contrato d38`): no es lo mismo cerrar el año que
+  quebrar a mitad con un balance parecido.
+- El ranking se ve en el menú (sólo lectura) y en resultados (con formulario de
+  nombre). El nombre se recuerda entre partidas.
+- `cloudflare-worker/` nuevo: `worker.js`, `wrangler.toml` y `README.md` con
+  los pasos de despliegue. **No se desplegó**: esta máquina no tiene Node, así
+  que falta correr `npx wrangler deploy` y pegar la URL en
+  `CONFIG.leaderboard.apiUrl`.
+
+**Decisiones:**
+- **El nombre del jugador se escapa antes de pintarlo** (`lbEscapar`). Es texto
+  que escribe el usuario y, con el Worker activo, texto que llega de terceros;
+  inyectarlo con `innerHTML` sin escapar sería un XSS. Verificado con un
+  nombre `<img src=x onerror=...>`: no se inyecta nada en el DOM.
+- El Worker **no confía en el cuerpo del POST**: recorta y acota todos los
+  campos. `/api/reset` exige `X-Admin-Secret` y, si `ADMIN_SECRET` no está
+  configurado, **rechaza siempre** — es preferible que el reinicio no funcione
+  a dejarlo abierto.
+- El criterio de orden está duplicado a propósito en cliente y Worker
+  (`lbOrdenar` / `ordenar`); queda anotado en ambos que si cambia uno debe
+  cambiar el otro.
+- Verificado: los 6 criterios de aceptación siguen pasando. El ranking no toca
+  el modelo económico.
+
+**Hecho — `CLAUDE.md` de Stay Times:**
+- Se reescribió para que describa el proyecto real. Las viejas "restricciones
+  no negociables" (un solo archivo, prohibido cargar assets externos) llevaban
+  tiempo incumplidas y describían un proyecto que ya no existe.
+- Se documentó lo que el proyecto **sí** carga (6 `.obj` locales, Three.js de
+  unpkg, Google Fonts, logo de Coca-Cola hotlinkeado de Wikimedia, Worker
+  propio) y sus tres consecuencias: no es un solo archivo, **no abre con
+  `file://`** (verificado: los 6 modelos se bloquean por CORS) y no funciona
+  sin internet.
+- El límite de "<5000 triángulos" se sustituyó por un criterio de rendimiento:
+  los modelos suman ~123,500 caras. Se anotó que `caja-refrescos.obj` (40,344)
+  se instancia varias veces por parada y es el primer candidato a decimar.
+- Se corrigió que la bitácora es `handoff.md`, no el `last.md` que el archivo
+  mencionaba y que nunca existió.
+- Queda una sección "Historia de las restricciones" explicando qué se relajó,
+  cuándo y a petición de quién.
+
+**Pendiente:**
+- Desplegar el Worker del ranking y pegar la URL en `CONFIG.leaderboard.apiUrl`
+  (hace falta Node en la máquina, o hacerlo desde el panel de Cloudflare).
+- Sigue pendiente de sesiones anteriores: actualizar `fleet-sizing-spec.md`
+  (números de la política adaptativa, índice de día base 0, modo duro, ciudad
+  en vista aérea, animación en tiempo real) y la revisión visual a 375 px.
+
+**Archivos tocados:** `index.html`, `README.md`, `cloudflare-worker/` (nuevo),
+este archivo, y `../juego_stay_times/CLAUDE.md`.

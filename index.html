@@ -126,6 +126,24 @@
   .cf .col.gana{border-color:var(--p-rojo);border-width:2px}
   .cf .vl{font-size:22px;font-weight:700}
   .delta{font-size:14px;margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--panel2);border:1px solid var(--line);color:var(--tx2)}
+  /* ---------- Ranking ---------- */
+  .lb-table{width:100%;border-collapse:collapse;font-size:12.5px}
+  .lb-table th{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--tx3);
+               text-align:right;padding:5px 6px;border-bottom:1px solid var(--line);font-weight:600}
+  .lb-table td{padding:6px;border-bottom:1px solid var(--line);text-align:right}
+  .lb-table th:nth-child(1),.lb-table td:nth-child(1),
+  .lb-table th:nth-child(2),.lb-table td:nth-child(2){text-align:left}
+  .lb-table tbody tr.yo td{background:rgba(240,45,58,.10);font-weight:700;color:var(--tx)}
+  .lb-vacio{color:var(--tx3);font-size:13px;padding:8px 0}
+  .lb-modo{font-size:10px;padding:1px 6px;border-radius:99px;border:1px solid var(--line);
+           color:var(--tx3);white-space:nowrap}
+  .lb-modo.duro{border-color:var(--p-rojo);color:var(--p-rojo2)}
+  .lb-form{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+  .lb-form input{font:inherit;padding:9px 10px;border:1px solid var(--line);border-radius:8px;
+                 background:var(--panel2);color:var(--tx);min-height:44px;flex:1 1 170px}
+  .lb-estado{font-size:11px;color:var(--tx3);min-height:16px;margin-bottom:6px}
+  .lb-wrap{overflow-x:auto}
+
   table.tst{width:100%;border-collapse:collapse;font-size:12px}
   table.tst th,table.tst td{border-bottom:1px solid var(--line);padding:4px 6px;text-align:right}
   table.tst th:first-child,table.tst td:first-child{text-align:left}
@@ -191,6 +209,11 @@
         <button class="chico" id="btn-tests">Correr criterios de aceptación</button>
       </div>
     </div>
+    <div class="card">
+      <h2>Ranking</h2>
+      <div class="lb-wrap" id="lb-menu"></div>
+    </div>
+
     <div class="card oculto" id="card-tests">
       <h2>Criterios de aceptación (semilla <span id="tst-seed"></span>)</h2>
       <div id="tst-salida"></div>
@@ -333,6 +356,17 @@
       <div class="nota" id="res-invariante" style="margin-top:8px"></div>
     </div>
 
+    <div class="card">
+      <h2>Ranking</h2>
+      <div class="lb-form">
+        <input id="lb-nombre" type="text" maxlength="24" placeholder="Tu nombre"
+               aria-label="Tu nombre para el ranking" autocomplete="nickname">
+        <button class="primario" id="btn-guardar-score">Guardar mi resultado</button>
+      </div>
+      <div class="lb-estado" id="lb-estado"></div>
+      <div class="lb-wrap" id="lb-resultados"></div>
+    </div>
+
     <div class="fila">
       <button class="primario crece" id="btn-otra">Jugar otro año</button>
       <button class="chico" id="btn-menu">Volver al menú</button>
@@ -416,6 +450,18 @@ const CONFIG = {
   // --- Política adaptativa de referencia (criterios de aceptación) ---
   adaptiveWindow: 14,
   adaptiveWarmupFleet: 10,
+
+  // --- Ranking ---
+  // El puntaje es el balance final: es la métrica que el juego ya enseña, y
+  // como la semilla es fija todas las partidas son comparables entre sí.
+  // Sin `apiUrl` el ranking es local (localStorage); con él se sincroniza
+  // contra el Worker de Cloudflare. Ver cloudflare-worker/.
+  leaderboard: {
+    maxEntries: 10,
+    apiUrl: null,
+    claveLocal: 'fsLeaderboard',
+    claveNombre: 'fsNombre'
+  },
 
   // --- Presentación ---
   balanceObjetivo: 83925,    // modo clásico: mejor flota fija con la semilla por defecto
@@ -837,6 +883,7 @@ function estadoMenu() {
   $('menu-piso').textContent   = fmtDinero(D.pisoCaja);
   $('menu-deuda').textContent  = D.deudaMaxDias;
   $('menu-gracia').textContent = D.graciaDias;
+  lbPintar('lb-menu');
   irA(ESTADOS.MENU);
 }
 
@@ -1475,6 +1522,14 @@ function pintarResultados(r) {
     : 'Con el mismo promedio de ' + Nfijo + ' camiones, dejarlos fijos todo el año habría dado <b>' +
       fmtDinero(-d) + '</b> más: moviste la palanca, pero a destiempo respecto de la demanda.';
 
+  // Ranking: se recuerda el último nombre usado para no volver a escribirlo.
+  let nombrePrevio = '';
+  try { nombrePrevio = localStorage.getItem(LB.claveNombre) || ''; } catch (e) {}
+  $('lb-nombre').value = nombrePrevio;
+  $('btn-guardar-score').disabled = false;
+  $('lb-estado').textContent = '';
+  lbPintar('lb-resultados');
+
   $('res-invariante').textContent =
     'Invariante de conservación: demanda (' + fmtCajas(r.demandaTotal) + ') − entregado (' +
     fmtCajas(r.entregadoTotal) + ') − deuda final (' + fmtCajas(r.backlogFinal) + ') = ' +
@@ -1511,6 +1566,146 @@ function pintarCriterios() {
 }
 
 /* --------------------------------------------------------------------------
+   RANKING — localStorage siempre, Cloudflare Worker si hay `apiUrl`.
+
+   Se guarda en local primero y se sincroniza después: así el ranking funciona
+   sin conexión y sin backend desplegado, y el Worker sólo lo vuelve compartido
+   entre jugadores. Cualquier fallo de red es silencioso a propósito; el juego
+   no depende del ranking para funcionar.
+   -------------------------------------------------------------------------- */
+const LB = CONFIG.leaderboard;
+const lbUrl = ruta => LB.apiUrl.replace(/\/$/, '') + ruta;
+
+function lbLocal() {
+  try { return JSON.parse(localStorage.getItem(LB.claveLocal)) || []; }
+  catch (e) { return []; }
+}
+function lbGuardarLocal(entradas) {
+  try { localStorage.setItem(LB.claveLocal, JSON.stringify(entradas)); } catch (e) {}
+}
+
+/* Orden del ranking: el balance manda, porque es el marcador del juego. Los
+   desempates premian al que además dio mejor servicio y dejó menos deuda. */
+function lbOrdenar(a, b) {
+  return (b.balance - a.balance)
+      || (b.servicio - a.servicio)
+      || (a.deudaFinal - b.deudaFinal);
+}
+
+async function lbNube() {
+  if (!LB.apiUrl) return null;
+  try {
+    const res = await fetch(lbUrl('/api/leaderboard'), { headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    const datos = await res.json();
+    if (Array.isArray(datos)) { lbGuardarLocal(datos); return datos; }
+  } catch (e) { /* sin conexión: se queda con el ranking local */ }
+  return null;
+}
+
+/* El nombre lo escribe el jugador y se pinta como HTML: hay que escaparlo.
+   Con el Worker puesto, además llega de otras personas. */
+function lbEscapar(txt) {
+  const d = document.createElement('div');
+  d.textContent = String(txt == null ? '' : txt);
+  return d.innerHTML;
+}
+
+function lbPintar(contenedorId, resaltar) {
+  const el = $(contenedorId);
+  if (!el) return;
+
+  const dibujar = lb => {
+    if (!lb || !lb.length) {
+      el.innerHTML = '<div class="lb-vacio">Todavía no hay partidas registradas. ' +
+                     'Termina un año y guarda tu resultado.</div>';
+      return;
+    }
+    const filas = lb.map((e, i) => {
+      const yo = resaltar && e.nombre === resaltar ? ' class="yo"' : '';
+      const modo = e.modo === 'duro'
+        ? '<span class="lb-modo duro">duro</span>'
+        : '<span class="lb-modo">clásico</span>';
+      // Una partida que terminó antes de tiempo se marca: no es lo mismo
+      // cerrar el año que quebrar en el día 150 con un balance parecido.
+      const cierre = e.fin
+        ? '<span class="lb-modo duro">' + (e.fin === 'caja' ? 'quiebra' : 'sin contrato') +
+          ' d' + e.dias + '</span>'
+        : '<span class="lb-modo">año completo</span>';
+      return '<tr' + yo + '><td>' + (i + 1) + '</td>' +
+        '<td>' + lbEscapar(e.nombre) + '</td>' +
+        '<td class="mono"><b>' + fmtDinero(e.balance) + '</b></td>' +
+        '<td class="mono">' + e.servicio.toFixed(1) + '%</td>' +
+        '<td class="mono">' + e.flotaPromedio.toFixed(1) + '</td>' +
+        '<td>' + modo + '</td><td>' + cierre + '</td></tr>';
+    }).join('');
+    el.innerHTML = '<table class="lb-table"><thead><tr><th>#</th><th>Nombre</th>' +
+      '<th>Balance</th><th>Servicio</th><th>Flota prom.</th><th>Modo</th><th>Cierre</th>' +
+      '</tr></thead><tbody>' + filas + '</tbody></table>';
+  };
+
+  dibujar(lbLocal());                                  // instantáneo
+  if (LB.apiUrl) lbNube().then(nube => { if (nube) dibujar(nube); });
+}
+
+async function lbAgregar(entrada) {
+  const lb = lbLocal();
+  lb.push(entrada);
+  lb.sort(lbOrdenar);
+  lbGuardarLocal(lb.slice(0, LB.maxEntries));
+
+  if (!LB.apiUrl) return;
+  try {
+    const res = await fetch(lbUrl('/api/score'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entrada)
+    });
+    const datos = await res.json();
+    if (Array.isArray(datos)) lbGuardarLocal(datos);
+  } catch (e) { /* queda guardado en local; se sincroniza en la próxima */ }
+}
+
+/* Arma la entrada del ranking a partir del resumen del año recién cerrado. */
+function lbEntrada(nombre, r) {
+  return {
+    nombre: nombre.slice(0, 24),
+    balance: Math.round(r.balance),
+    servicio: +r.servicio.toFixed(1),
+    flotaPromedio: +r.flotaPromedio.toFixed(2),
+    eficiencia: +r.eficiencia.toFixed(1),
+    deudaFinal: Math.round(r.backlogFinal),
+    dias: r.diasJugados,
+    fin: P ? P.ef.fin : null,          // null | 'caja' | 'contrato'
+    modo: CONFIG.duro.activo ? 'duro' : 'clasico',
+    semilla: CONFIG.seed,              // sin la misma semilla no son comparables
+    fecha: new Date().toISOString().slice(0, 10)
+  };
+}
+
+async function guardarResultado() {
+  const input = $('lb-nombre');
+  const nombre = input.value.trim();
+  if (!nombre) {
+    $('lb-estado').textContent = 'Escribe un nombre para guardar tu resultado.';
+    input.focus();
+    return;
+  }
+  if (!ultimoResumen) return;
+
+  try { localStorage.setItem(LB.claveNombre, nombre); } catch (e) {}
+  $('btn-guardar-score').disabled = true;
+  $('lb-estado').textContent = 'Guardando…';
+
+  await lbAgregar(lbEntrada(nombre, ultimoResumen));
+
+  $('lb-estado').textContent = LB.apiUrl
+    ? 'Guardado en el ranking compartido.'
+    : 'Guardado en este navegador. Para el ranking compartido falta configurar CONFIG.leaderboard.apiUrl.';
+  lbPintar('lb-resultados', nombre);
+}
+
+/* --------------------------------------------------------------------------
    Eventos
    -------------------------------------------------------------------------- */
 function cambiarFlota(n) {
@@ -1529,6 +1724,8 @@ $('btn-mas').onclick      = () => cambiarFlota(P.ef.objetivo + 1);
 $('slider-flota').oninput = e => cambiarFlota(+e.target.value);
 $('btn-pausa').onclick    = () => estado === ESTADOS.PAUSA ? estadoReanudar() : estadoPausa();
 $('btn-reanudar').onclick = estadoReanudar;
+$('btn-guardar-score').onclick = guardarResultado;
+$('lb-nombre').onkeydown  = e => { if (e.key === 'Enter') guardarResultado(); };
 $('btn-otra').onclick     = estadoJugando;
 $('btn-menu').onclick     = estadoMenu;
 
