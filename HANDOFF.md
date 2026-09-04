@@ -602,3 +602,149 @@ las 4 tanto en el cliente como en el servidor. El nombre sigue escapándose
 
 **Archivos tocados:** `index.html`, `README.md`, `cloudflare-worker/worker.js`,
 `cloudflare-worker/wrangler.toml`, `cloudflare-worker/README.md`, este archivo.
+
+---
+
+## 2026-09-04 — Rediseño de diversión (1/2): modelo nuevo
+
+Se consultó a un modelo externo cómo hacer el juego más divertido. Su
+diagnóstico central: **en modo clásico no hay ninguna decisión**, porque la
+palanca es gratis e instantánea y el HUD daba la respuesta ("te faltan 7
+camiones"). Manuel pidió implementar el plan resultante.
+
+**Punto de retorno:** tag `v1-modelo-original` (commit `4f72164`), publicado.
+Si algo sale mal: `git checkout v1-modelo-original`.
+
+**Hecho — dos cambios de modelo que rompen los criterios a propósito:**
+
+1. **Flujos de RNG separados** (`shockSeedXor`, `incidentSeedXor`). Antes todo
+   salía de un solo generador, así que el lazo de incidentes —cuyo número de
+   llamadas depende del tamaño de la flota— corría el ruido y los shocks de
+   todos los días siguientes. **Dos jugadores con decisiones distintas
+   enfrentaban años distintos**, lo que invalidaba la comparación del ranking
+   global que se publicó ese mismo día. Verificado: con flotas fijas de 4, 11 y
+   25 y con la política adaptativa, la demanda total es ahora **idéntica**
+   (183,769 cajas).
+2. **Shocks con duración** (`shockStartProb: 0.022`, `shockMinDays: 3`,
+   `shockMaxDays: 12`). Antes duraban un día, y con 7 días de espera para
+   contratar la respuesta óptima a cualquier shock era siempre ignorarlo: no
+   había decisión bajo incertidumbre. Ahora son regímenes: la semilla 42 genera
+   **6 regímenes de 5 a 12 días, el 13% del año**. El día 2 de un régimen no
+   sabes si durará 3 días o 12.
+
+**Criterios de aceptación recalibrados** (semilla 42, flota fija):
+
+| Flota | Balance | Servicio | Deuda final |
+|---|---:|---:|---:|
+| 6 | $50,025 | 44.9% | 101,303 |
+| 10 | $84,431 | 75.1% | 45,846 |
+| **11** | **$89,394** | 81.7% | 33,636 |
+| 12 | $78,419 | 84.4% | 28,669 |
+| 20 | −$34,439 | 99.8% | 332 |
+| Adaptativa | **$108,013** | 95.6% | 8,072 |
+
+El óptimo entre flotas fijas **se movió de N=10 a N=11** y sigue siendo
+interior, con la curva cóncava a ambos lados (N=10 y N=12 rinden menos). La
+política adaptativa le sigue ganando a cualquier flota fija. Invariante de
+conservación en 0.00e+00 en las seis corridas, y el puerto a JS coincide al
+dígito con `verify_balance.py`.
+
+**Una propuesta del modelo externo se rechazó por falsa.** Afirmaba que conviene
+despedir toda la flota en la última semana porque la deuda del día 365 vale
+cero. La premisa es cierta pero la conclusión no: se simuló y liquidar **pierde**
+entre $1,944 y $19,772, porque `peakDay=350` hace que el fin de año coincida con
+el pico de demanda y los camiones van llenos ($88 de ingreso contra $60 de
+costo). Queda anotado que el modelo se salva por una coincidencia de
+calibración: si `peakDay` se moviera a mitad de año, el hueco se abriría y haría
+falta penalizar la deuda final.
+
+**Archivos tocados:** `verify_balance.py`, `index.html`, este archivo.
+
+---
+
+## 2026-09-04 — Rediseño de diversión (2/2): reglas, cierre de mes y semilla semanal
+
+**Hecho:**
+
+1. **Las reglas de operación dejan de ser opcionales.** `CONFIG.duro.activo`
+   pasa a `true` y se quitó la casilla del menú. Sin costo ni espera para
+   contratar, la palanca es gratis e instantánea y no hay decisión: basta leer
+   la demanda y copiarla. Los criterios de aceptación siguen corriendo el modelo
+   económico puro, así que poner el flag en `false` sigue sirviendo para
+   verificar.
+2. **Se quitó el diagnóstico prescriptivo.** El panel marginal decía "te faltan
+   7 camiones", que era literalmente la respuesta. Ahora dice qué pasó ("no
+   cupieron 711 cajas de hoy: se van a la deuda") y deja la decisión de cuánto
+   adelantarse al jugador, que con 7 días de espera es la decisión central.
+3. **Cierre de mes.** Once pausas con estado de resultados: utilidad del mes,
+   camiones-día ociosos con su costo en pesos, entregado contra demandado, deuda
+   en días de flota, tendencia contra el mes anterior y flota confirmada. La
+   número doce es la pantalla de resultados.
+4. **Semilla semanal curada.** La partida usa una semilla derivada de la semana
+   ISO: mismo año para todos los que juegan esa semana, distinto cada semana.
+   `CONFIG.seed = 42` queda sólo como semilla de pruebas.
+5. **Puntaje relativo.** `balance − mejor flota fija posible de esa semilla`,
+   calculado **con las mismas reglas** que jugó el jugador. El ranking ordena
+   por ese número, que sí es comparable entre semanas.
+
+**Decisiones y hallazgos de la calibración:**
+
+- **`graciaDias` resultó irrelevante.** El modelo externo sugería subirlo de 5 a
+  10; el barrido muestra resultados idénticos para 5, 10 y 14, porque nadie
+  ronda el umbral tantos días seguidos. Se dejó en 5 y quedó anotado.
+- **El costo de contratar era la palanca real.** Con los shocks de varios días,
+  `hireCost=600` obligaba a mover tanto la flota que el costo de moverla se
+  comía la ventaja de adaptarse: el jugador adaptativo sacaba $28,147 contra
+  $27,241 de la mejor flota fija, casi un empate. Recalibrado a **400/200**:
+
+  | Forma de jugar | Balance |
+  |---|---:|
+  | Mejor flota fija que sobrevive | $28,441 |
+  | Adaptativo reactivo | $53,947 |
+  | Jugador que anticipa la estación | $65,744 |
+
+  Ahora hay margen entre reaccionar y anticipar, que es la habilidad que el
+  juego enseña.
+- **El baseline tenía que calcularse con las reglas del juego, no con el modelo
+  puro.** Comparar al jugador (que paga arranque y contrataciones) contra una
+  flota fija del modelo puro lo dejaba perdiendo siempre: la adaptativa saca
+  ~$54k en modo duro contra los $89k de la mejor fija en modelo puro. Se
+  escribió `simularAnioDuro` en JS para esto.
+- **Hizo falta curar la semilla.** En la primera semilla semanal probada
+  **ninguna** flota fija sobrevivía el año, así que el baseline quedaba en $0 y
+  la "ventaja" era el balance crudo. Ahora se prueban hasta 24 candidatas de la
+  misma semana hasta encontrar una con al menos una flota fija superviviente y
+  de balance positivo. El barrido cuesta ~5 ms, así que curar es barato.
+- **Los años truncados no compiten con los completos.** El jugador pasivo perdía
+  el contrato en el primer mes y aun así mostraba ventaja positiva, porque su
+  balance parcial superaba al baseline de año completo. Ahora el orden del
+  ranking pone los años completos primero, y en resultados la ventaja de un año
+  truncado se muestra como "—", no como logro. Corregido en cliente **y** en el
+  Worker (redesplegado).
+- **La métrica mensual de servicio estaba mal.** Daba 120.6% porque lo entregado
+  incluye deuda vieja. Se sustituyó por "entregado / demandado" con una nota de
+  si vas bajando deuda o acumulando.
+
+**Verificado:** los 6 criterios pasan en `verify_balance.py` y en el
+`index.html` entregado; la demanda total es idéntica para cuatro políticas muy
+distintas; el juego corre el año completo con los once cierres; pasivo pierde el
+contrato, reactivo y anticipador ganan con ventajas de $49,925 y $53,104; cero
+mojibake.
+
+**`fleet-sizing-spec.md` actualizado**, que arrastraba cinco desactualizaciones
+desde agosto. Ocho marcas «CAMBIO (2026-09-04)» con el modelo nuevo, los
+criterios recalculados, la ciudad en vista aérea, las reglas de operación, la
+semilla semanal y el cierre de mes.
+
+**Pendiente:**
+- Revisión visual a 375 px del cierre de mes (se probó headless, no a ojo).
+- El `CLAUDE.md` de `../juego_stay_times` sigue sin commitear en su repo.
+- Portar a Stay Time el arreglo de concurrencia del Worker: tiene el mismo bug
+  de leer-modificar-escribir sobre una sola llave de KV.
+- Sonido: se descartó por ahora. Lo único que valdría la pena es un aviso cuando
+  llegan los camiones contratados, porque marca el retardo.
+
+**Punto de retorno:** tag `v1-modelo-original`.
+
+**Archivos tocados:** `index.html`, `verify_balance.py`, `fleet-sizing-spec.md`,
+`cloudflare-worker/worker.js`, este archivo.

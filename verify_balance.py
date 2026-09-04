@@ -34,9 +34,22 @@ CONFIG = {
     "demandAmp": 300,
     "peakDay": 350,
     "noiseRange": 50,
-    "shockProb": 0.05,
+    # Los shocks son REGIMENES que duran varios dias, no picos de un dia.
+    # Con un dia de duracion y 7 de espera para contratar, la respuesta optima
+    # a cualquier shock era siempre ignorarlo: no habia decision que tomar.
+    "shockStartProb": 0.022,
+    "shockMinDays": 3, "shockMaxDays": 12,
     "shockDownMin": 0.3, "shockDownRange": 0.3,
     "shockUpMin": 1.5,   "shockUpRange": 0.7,
+
+    # Flujos de RNG independientes. Antes todo salia de un solo generador, asi
+    # que el lazo de incidentes (cuyo numero de llamadas depende del tamano de
+    # la flota) corria el ruido y los shocks de todos los dias siguientes: dos
+    # jugadores con decisiones distintas enfrentaban AÑOS distintos y el ranking
+    # comparaba peras con manzanas. Separados, la serie de demanda depende solo
+    # de la semilla.
+    "shockSeedXor": 0x9E3779B9,
+    "incidentSeedXor": 0x85EBCA6B,
     "adaptiveWindow": 14,
     "adaptiveWarmupFleet": 10,
 }
@@ -78,19 +91,45 @@ def js_round(x):
 # ---------------------------------------------------------------------------
 # Modelo
 # ---------------------------------------------------------------------------
-def demanda_del_dia(dia, rng, c=CONFIG):
-    """`dia` es índice base 0 (0 = 1 de enero). Orden de rng(), no reordenar:
-    1) ruido, 2) chequeo de shock, 3) dirección, 4) magnitud."""
-    d = c["demandBase"] + c["demandAmp"] * math.cos(
-        2 * math.pi * (dia - c["peakDay"]) / c["yearDays"]
-    )
-    d += (rng() - 0.5) * c["noiseRange"]
-    if rng() < c["shockProb"]:
-        if rng() < 0.5:
-            d *= c["shockDownMin"] + rng() * c["shockDownRange"]
-        else:
-            d *= c["shockUpMin"] + rng() * c["shockUpRange"]
-    return max(0, js_round(d))
+def crear_demanda(seed=None, c=CONFIG):
+    """Devuelve una funcion demanda(dia) con su propio estado de shock.
+
+    `dia` es indice base 0 (0 = 1 de enero). Consume DOS flujos de RNG que no
+    dependen de las decisiones del jugador, asi que la serie de demanda queda
+    fijada por la semilla y es identica para todos.
+
+    Orden de consumo, no reordenar:
+      rngRuido : 1 llamada por dia.
+      rngShock : 1 llamada por dia para el chequeo y, si arranca un regimen,
+                 3 mas (direccion, magnitud, duracion).
+    """
+    seed = c["seed"] if seed is None else seed
+    rng_ruido = mulberry32(seed)
+    rng_shock = mulberry32(seed ^ c["shockSeedXor"])
+    estado = {"restantes": 0, "mult": 1.0}
+
+    def demanda(dia):
+        d = c["demandBase"] + c["demandAmp"] * math.cos(
+            2 * math.pi * (dia - c["peakDay"]) / c["yearDays"]
+        )
+        d += (rng_ruido() - 0.5) * c["noiseRange"]
+
+        if estado["restantes"] > 0:
+            d *= estado["mult"]
+            estado["restantes"] -= 1
+        elif rng_shock() < c["shockStartProb"]:
+            if rng_shock() < 0.5:
+                estado["mult"] = c["shockDownMin"] + rng_shock() * c["shockDownRange"]
+            else:
+                estado["mult"] = c["shockUpMin"] + rng_shock() * c["shockUpRange"]
+            dur = c["shockMinDays"] + int(
+                rng_shock() * (c["shockMaxDays"] - c["shockMinDays"] + 1))
+            d *= estado["mult"]
+            estado["restantes"] = dur - 1
+
+        return max(0, js_round(d))
+
+    return demanda
 
 
 def ejecutar_dia(demanda, N, backlog, rng, c=CONFIG):
@@ -134,7 +173,9 @@ def ejecutar_dia(demanda, N, backlog, rng, c=CONFIG):
 
 def simular_anio(politica, seed=None, c=CONFIG):
     """`politica(dia, historial_demanda, backlog) -> N`."""
-    rng = mulberry32(CONFIG["seed"] if seed is None else seed)
+    seed = c["seed"] if seed is None else seed
+    demanda_del_dia = crear_demanda(seed, c)
+    rng = mulberry32(seed ^ c["incidentSeedXor"])   # flujo propio de incidentes
     backlog = 0.0
     ingreso = costo = 0.0
     total_demanda = total_entregado = 0.0
@@ -144,7 +185,7 @@ def simular_anio(politica, seed=None, c=CONFIG):
 
     for dia in range(c["yearDays"]):
         N = politica(dia, dems, backlog)
-        demanda = demanda_del_dia(dia, rng, c)
+        demanda = demanda_del_dia(dia)
         r = ejecutar_dia(demanda, N, backlog, rng, c)
 
         backlog = r["backlog_manana"]
@@ -185,22 +226,23 @@ def politica_adaptativa(c=CONFIG):
 # ---------------------------------------------------------------------------
 # Criterios de aceptación del spec
 # ---------------------------------------------------------------------------
-# Los cinco escenarios de flota fija son los del spec, sin tocar.
-# El escenario adaptativo trae los números CORREGIDOS: los del spec original
-# (102250 / 96.3% / 13.0) no pueden salir de una misma corrida de este modelo
-# (implican 182,644 cajas de demanda total, y con ~13 camiones la serie genera
-# ~178,000). Ver HANDOFF.md, entrada del 2026-08-13.
+# Números recalculados tras separar los flujos de RNG y dar duración a los
+# shocks (2026-09-04). Los del spec original ya no aplican: describían el modelo
+# de un solo flujo con shocks de un día. El óptimo entre flotas fijas se movió
+# de N=10 a N=11 y sigue siendo interior, con la curva cóncava a ambos lados
+# (N=10 y N=12 rinden menos), que es la propiedad que hace que el juego tenga
+# tensión. Ver HANDOFF.md.
 CRITERIOS = [
-    {"etiqueta": "Flota fija N=6",  "N": 6,  "balance": 49943},
-    {"etiqueta": "Flota fija N=9",  "N": 9,  "balance": 76325},
-    {"etiqueta": "Flota fija N=10", "N": 10, "balance": 83925,
-     "servicio": 78.3, "backlog": 38097},
-    {"etiqueta": "Flota fija N=11", "N": 11, "balance": 82504},
-    {"etiqueta": "Flota fija N=20", "N": 20, "balance": -50714},
+    {"etiqueta": "Flota fija N=6",  "N": 6,  "balance": 50025},
+    {"etiqueta": "Flota fija N=10", "N": 10, "balance": 84431},
+    {"etiqueta": "Flota fija N=11", "N": 11, "balance": 89394,
+     "servicio": 81.7, "backlog": 33636},
+    {"etiqueta": "Flota fija N=12", "N": 12, "balance": 78419},
+    {"etiqueta": "Flota fija N=20", "N": 20, "balance": -34439},
 ]
 CRITERIO_ADAPTATIVO = {
     "etiqueta": "Política adaptativa (media móvil 14d)",
-    "balance": 103390, "servicio": 95.3, "flota": 12.345,
+    "balance": 108013, "servicio": 95.6, "flota": 12.718,
 }
 
 
@@ -280,8 +322,13 @@ def correr_barrido(lo=4, hi=24):
 # ---------------------------------------------------------------------------
 DURO = {
     "leadTimeDays": 7,
-    "hireCost": 600,
-    "fireCost": 300,
+    # Recalibrado tras los shocks con duración: con 600/300 los regímenes
+    # obligaban a mover tanto la flota que el costo de mover se comía la
+    # ventaja de adaptarse, y el jugador adaptativo apenas empataba con la
+    # mejor flota fija. `graciaDias` resultó irrelevante en todo el barrido
+    # (nadie ronda el umbral tantos días seguidos), así que se dejó en 5.
+    "hireCost": 400,
+    "fireCost": 200,
     "pisoCaja": -25000,
     "deudaMaxDias": 30,
     "graciaDias": 5,
@@ -292,7 +339,8 @@ DURO = {
 def simular_duro(politica, d=DURO, c=CONFIG):
     """Mismo `ejecutar_dia` que el modo base; lo que cambia es que mover la
     palanca cuesta y tarda, y que la partida puede terminar antes de tiempo."""
-    rng = mulberry32(c["seed"])
+    demanda_del_dia = crear_demanda(c["seed"], c)
+    rng = mulberry32(c["seed"] ^ c["incidentSeedXor"])
     activos = c["adaptiveWarmupFleet"]
     pedidos = {}
     backlog = 0.0
@@ -323,7 +371,7 @@ def simular_duro(politica, d=DURO, c=CONFIG):
         # Las llegadas se aplican después de la orden del día
         activos += pedidos.pop(dia, 0)
 
-        demanda = demanda_del_dia(dia, rng, c)
+        demanda = demanda_del_dia(dia)
         r = ejecutar_dia(demanda, activos, backlog, rng, c)
         backlog = r["backlog_manana"]
         ingreso += r["ingreso"]

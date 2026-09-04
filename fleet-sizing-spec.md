@@ -1,6 +1,11 @@
 Rol: Actúa como Lead Game Developer y diseñador de serious games. El objetivo
 pedagógico manda sobre el espectáculo visual.
 
+> **ESTADO: actualizado 2026-09-04.** Este documento ya refleja el modelo
+> vigente. Los cambios grandes respecto de la primera versión van marcados con
+> «CAMBIO» y razonados en `HANDOFF.md`. El punto de retorno al modelo original
+> es el tag de git `v1-modelo-original`.
+
 ## OBJETIVO DE APRENDIZAJE
 
 El jugador debe salir entendiendo tres cosas:
@@ -73,21 +78,44 @@ function mulberry32(a) {
 
 ```
 seasonal(dia) = CONFIG.demandBase + CONFIG.demandAmp * cos(2π*(dia - CONFIG.peakDay)/365)
-demanda(dia)  = seasonal(dia) + (rng() - 0.5) * CONFIG.noiseRange
-si rng() < CONFIG.shockProb:
-    si rng() < 0.5:  demanda *= (CONFIG.shockDownMin + rng()*CONFIG.shockDownRange)
-    si_no:            demanda *= (CONFIG.shockUpMin   + rng()*CONFIG.shockUpRange)
+demanda(dia)  = seasonal(dia) + (rngRuido() - 0.5) * CONFIG.noiseRange
+si quedan días de un régimen en curso:
+    demanda *= multiplicadorVigente;  díasRestantes -= 1
+si_no si rngShock() < CONFIG.shockStartProb:
+    si rngShock() < 0.5:  mult = CONFIG.shockDownMin + rngShock()*CONFIG.shockDownRange
+    si_no:                mult = CONFIG.shockUpMin   + rngShock()*CONFIG.shockUpRange
+    dur = CONFIG.shockMinDays + floor(rngShock()*(shockMaxDays - shockMinDays + 1))
+    demanda *= mult;  díasRestantes = dur - 1
 demanda = max(0, round(demanda))
 ```
 
-Defaults: `demandBase=480, demandAmp=300, peakDay=350, noiseRange=50,
-shockProb=0.05, shockDownMin=0.3, shockDownRange=0.3, shockUpMin=1.5,
-shockUpRange=0.7`.
+**CAMBIO (2026-09-04): `dia` es índice base 0** (0 = 1 de enero). La primera
+versión no lo definía, y sólo base 0 reproduce los números.
 
-**Orden de llamadas a `rng()` por día (crítico para reproducibilidad, no
-reordenar):** 1) ruido, 2) chequeo de shock, 3) si hay shock: dirección,
-4) si hay shock: magnitud, 5) por cada camión despachado, en orden
+**CAMBIO (2026-09-04): los shocks son REGÍMENES de varios días**, no picos de
+un día. Con un día de duración y 7 de espera para contratar, la respuesta óptima
+a cualquier shock era siempre ignorarlo: no había decisión bajo incertidumbre.
+
+**CAMBIO (2026-09-04): tres flujos de `rng()` independientes**, derivados de la
+semilla: `rngRuido = mulberry32(seed)`,
+`rngShock = mulberry32(seed ^ shockSeedXor)`,
+`rngIncidentes = mulberry32(seed ^ incidentSeedXor)`.
+Antes todo salía de un solo generador, así que el lazo de incidentes —cuyo
+número de llamadas depende del tamaño de la flota— corría el ruido y los shocks
+de todos los días siguientes: **dos jugadores con decisiones distintas
+enfrentaban años distintos**, lo que hacía incomparable cualquier ranking.
+
+Defaults: `demandBase=480, demandAmp=300, peakDay=350, noiseRange=50,
+shockStartProb=0.022, shockMinDays=3, shockMaxDays=12, shockDownMin=0.3,
+shockDownRange=0.3, shockUpMin=1.5, shockUpRange=0.7`.
+
+**Orden de llamadas por día (crítico, no reordenar):** `rngRuido` 1 vez;
+`rngShock` 1 vez para el chequeo y, si arranca un régimen, 3 más (dirección,
+magnitud, duración); `rngIncidentes` por cada camión despachado, en orden
 `i=0..N-1`: chequeo de incidente y, si aplica, fracción entregada.
+
+**La serie de demanda depende SÓLO de la semilla**, nunca de las decisiones del
+jugador. Eso es lo que hace comparable el ranking.
 
 ## MODELO DE FLOTA Y CARGA SUSPENDIDA (implementar tal cual)
 
@@ -145,22 +173,61 @@ suma(demanda de todos los días) - suma(entregado de todos los días) - backlogF
 Si esta invariante no se cumple (con tolerancia de redondeo), hay un bug en
 la contabilidad de backlog.
 
-## ANIMACIÓN CEDIS-CIUDAD
+## CIUDAD — CAMBIO (2026-09-04): vista aérea, no franja lateral
 
-No hay mapa ni rutas reales: la ubicación de las tiendas no importa para la
-economía del juego (ver decisión de diseño previa). Pero el juego necesita
-señal visual de actividad, así que:
+Sigue sin haber geografía en la ECONOMÍA: `ejecutarDia` no sabe que existen
+colonias. El plano es una lectura de los agregados del día puesta en forma de
+mapa, no una simulación espacial.
 
-- Una franja horizontal con un ícono de CEDIS a la izquierda y un ícono de
-  ciudad a la derecha.
-- Cada día simulado, cada camión despachado (`estadoCamion[i] != 'inactivo'`)
-  anima un viaje de ida y vuelta a lo largo de la franja, con duración
-  sincronizada a la duración real del tick del día (`CONFIG.gameMs /
-  CONFIG.yearDays / velocidadActual`). Color verde si `'ok'`, ámbar si
-  `'incidente'`.
-- Los camiones inactivos ese día se quedan quietos junto al CEDIS.
-- Esto es decoración con propósito (comunica "hoy salieron X camiones y Y
-  tuvieron problemas" de un vistazo), no una simulación de tráfico.
+- Canvas de 320×96 «píxeles de arte» escalado con `image-rendering: pixelated`,
+  todo procedural con `fillRect` en coordenadas enteras.
+- Vista desde arriba: CEDIS a la izquierda y 18 colonias (6×3) separadas por
+  avenidas. Cada camión tiene una colonia asignada: sale, recorre su avenida,
+  se detiene a descargar y regresa.
+- Las colonias surtidas se ven claras; las que esperan se pintan de rojo, y la
+  fracción en rojo es `min(1, díasDeDeuda / deudaCiudadMax)`.
+- **El viaje corre en TIEMPO REAL** (`CONFIG.pixel.viajeMs`), NO sincronizado al
+  tick del día: un día dura 822 ms a 1x y sólo 82 ms a 10x, y a esa velocidad
+  los camiones eran un borrón.
+- El trazado se genera con un PRNG propio (`CONFIG.pixel.seed`), nunca con el de
+  la partida: la decoración no debe mover los números.
+
+## REGLAS DE OPERACIÓN — CAMBIO (2026-09-04): son el juego, no un modo opcional
+
+Sin ellas la palanca es gratis e instantánea y no hay ninguna decisión que
+tomar: basta leer la demanda y copiarla. Viven en `CONFIG.duro`:
+
+- Contratar cuesta `hireCost=400` y **tarda `leadTimeDays=7` días** en llegar.
+- Despedir cuesta `fireCost=200`.
+- Si la caja baja de `pisoCaja=-25000`, **quiebras** y termina la partida.
+- Si la deuda supera `deudaMaxDias=30` días de tu capacidad durante
+  `graciaDias=5` días seguidos, **pierdes el contrato**.
+
+Los criterios de aceptación corren el modelo económico puro, SIN esta capa.
+
+## SEMILLA SEMANAL Y PUNTAJE — CAMBIO (2026-09-04)
+
+- La partida usa una **semilla derivada de la semana ISO**: el año cambia cada
+  semana pero es el mismo para todos los que juegan esa semana. Con semilla fija
+  el jugador memoriza dónde caen los regímenes a la tercera partida.
+- La semilla se **cura**: se prueban candidatas de la misma semana hasta
+  encontrar una donde al menos una flota fija sobreviva el año con balance
+  positivo. Sin eso no hay contra qué medir al jugador.
+- El **puntaje es relativo**: `balance − (mejor flota fija posible de esa
+  semilla, jugada con las MISMAS reglas)`. Compararlo contra una flota fija del
+  modelo puro sería injusto, porque ésa no paga el arranque ni las
+  contrataciones. Ese número es el objetivo de aprendizaje 3 convertido en
+  marcador, y es comparable entre semanas distintas.
+- El veredicto ya no usa una cifra fija: **ganas si el puntaje es positivo** y
+  terminaste el año.
+
+## CIERRE DE MES — CAMBIO (2026-09-04)
+
+Al terminar cada mes el año se detiene y se muestra un estado de resultados:
+utilidad del mes, camiones-día ociosos y lo que costaron, entregado contra
+demandado, deuda en días de flota, tendencia de la temporada y flota confirmada
+para el mes siguiente. Concentra las decisiones en doce momentos legibles en vez
+de dejar tramos largos donde el jugador mira sin decidir nada.
 
 ## ECONOMÍA DESAGREGADA (HUD, siempre visible)
 
@@ -197,26 +264,30 @@ profitPerBox=2.2`), corriendo una flota FIJA (sin que el jugador la mueva)
 durante los 365 días completos:
 
 - [ ] Abre en el navegador sin errores en consola.
-- [ ] Flota fija N=10 todo el año: balance final = **$83,925**, nivel de
-      servicio = **78.3%**, backlog final = **38,097** cajas.
-- [ ] Flota fija N=9: balance = **$76,325** (menor que N=10).
-- [ ] Flota fija N=11: balance = **$82,504** (menor que N=10). Junto con el
-      punto anterior confirma que N=10 es un óptimo local entre flotas
-      fijas: la curva de balance contra tamaño de flota es cóncava, no
-      monótona.
-- [ ] Flota fija N=6: balance = **$49,943** (subflota, castigo por deuda
+**CAMBIO (2026-09-04): números recalculados.** Los de la primera versión
+describían el modelo de un solo flujo con shocks de un día. `CONFIG.seed = 42`
+es la semilla de PRUEBAS; la partida usa semilla semanal.
+
+- [ ] Flota fija N=11: balance = **$89,394**, nivel de servicio = **81.7%**,
+      backlog final = **33,636** cajas. Es el óptimo entre flotas fijas.
+- [ ] Flota fija N=10: balance = **$84,431** (menor que N=11).
+- [ ] Flota fija N=12: balance = **$78,419** (menor que N=11). Junto con el
+      anterior confirma que el óptimo es INTERIOR y la curva cóncava.
+- [ ] Flota fija N=6: balance = **$50,025** (subflota, castigo por deuda
       creciente).
-- [ ] Flota fija N=20: balance = **-$50,714** (sobreflota, castigo por
+- [ ] Flota fija N=20: balance = **−$34,439** (sobreflota, castigo por
       costo fijo).
-- [ ] La invariante de conservación (`demanda - entregado - backlogFinal ≈
-      0`) se cumple en todos los casos anteriores.
+- [ ] La invariante de conservación (`demanda - entregado - backlogFinal ≈ 0`)
+      se cumple en todos los casos anteriores.
+- [ ] La serie de demanda es idéntica para cualquier política: verificado con
+      flotas fijas de 4, 11 y 25 y con la adaptativa, **183,769 cajas** en las
+      cuatro.
 - [ ] Una política adaptativa simple (recalcular `N` cada día como
       `ceil(promedio móvil de los últimos 14 días de demanda / K)`, con
-      `N=10` mientras no haya 14 días de historia) da balance = **$102,250**,
-      nivel de servicio = **96.3%**, flota promedio ≈ **13.0** camiones.
-      Este resultado debe ser MAYOR que el mejor resultado de cualquier
-      flota fija de la lista anterior. Es la prueba de que el juego premia
-      adaptarse, no solo elegir bien una vez.
+      `N=10` mientras no haya 14 días de historia) da balance = **$108,013**,
+      nivel de servicio = **95.6%**, flota promedio ≈ **12.72** camiones.
+      Debe ser MAYOR que cualquier flota fija de la lista. Es la prueba de que
+      el juego premia adaptarse, no sólo elegir bien una vez.
 - [ ] El multiplicador de velocidad (1x/4x/10x) no cambia ninguno de los
       números anteriores, solo la velocidad a la que se generan.
 - [ ] Ningún reloj avanza con la pestaña en segundo plano.

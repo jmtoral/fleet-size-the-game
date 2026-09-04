@@ -118,6 +118,19 @@
            justify-content:center;padding:16px;z-index:50}
   .overlay .card{max-width:420px;width:100%;margin:0}
 
+  /* ---------- Cierre de mes ---------- */
+  .cierre h2{font-size:20px;margin-bottom:2px}
+  .cierre .util{font-size:30px;font-weight:800;letter-spacing:-.02em;margin:2px 0 10px}
+  .cierre .util.pos{color:var(--ok)} .cierre .util.neg{color:var(--bad)}
+  .cierre-fila{display:flex;justify-content:space-between;gap:10px;padding:7px 0;
+               border-bottom:1px solid var(--line);font-size:13px}
+  .cierre-fila:last-of-type{border-bottom:0}
+  .cierre-fila .et{color:var(--tx2)}
+  .cierre-fila .vl{font-weight:700}
+  .tendencia{margin:10px 0;padding:9px 11px;border-radius:8px;background:var(--panel2);
+             border:1px solid var(--line);font-size:13px;color:var(--tx2)}
+  .tendencia b{color:var(--tx)}
+
   /* ---------- Resultados ---------- */
   .veredicto{font-size:26px;font-weight:700;margin-bottom:2px}
   .balance-final{font-size:40px;font-weight:800;letter-spacing:-.03em}
@@ -188,10 +201,7 @@
             y mañana compite con la demanda nueva por la misma capacidad.</li>
       </ul>
       <div class="card" style="background:var(--panel2);margin-bottom:10px">
-        <label class="fila" style="gap:8px;cursor:pointer;margin-bottom:6px">
-          <input type="checkbox" id="chk-duro" style="width:20px;height:20px">
-          <b>Modo duro</b> <span class="nota">(opcional)</span>
-        </label>
+        <h3>Reglas de operación</h3>
         <ul style="color:var(--tx2);padding-left:18px;margin:0">
           <li>Contratar un camión cuesta <b id="menu-hire"></b> y <b>tarda
               <span id="menu-lead"></span> días en llegar</b>: hay que anticipar
@@ -326,6 +336,9 @@
              <div class="nota">cajas / camión-día activo</div></div>
         <div class="kpi"><div class="et">Flota promedio</div><div class="vl mono" id="res-flota">—</div></div>
         <div class="kpi"><div class="et">Deuda final</div><div class="vl mono c-bkl" id="res-backlog">—</div></div>
+        <div class="kpi"><div class="et">Ventaja por adaptarte</div>
+             <div class="vl mono" id="res-puntaje">—</div>
+             <div class="nota" id="res-puntaje-det"></div></div>
       </div>
     </div>
 
@@ -374,6 +387,35 @@
   </section>
 </div>
 
+<!-- ============ CIERRE DE MES ============ -->
+<div class="overlay oculto" id="overlay-cierre">
+  <div class="card cierre">
+    <h2 id="cierre-titulo">Cierre de mes</h2>
+    <div class="nota" id="cierre-sub"></div>
+    <div class="util mono" id="cierre-utilidad">$0</div>
+
+    <div class="cierre-fila"><span class="et">Ingreso del mes</span>
+      <span class="vl mono c-ing" id="cierre-ingreso">$0</span></div>
+    <div class="cierre-fila"><span class="et">Costo de flota</span>
+      <span class="vl mono c-cos" id="cierre-costo">$0</span></div>
+    <div class="cierre-fila"><span class="et">Camiones-día ociosos</span>
+      <span class="vl mono" id="cierre-ociosos">0</span></div>
+    <div class="cierre-fila"><span class="et">Entregado / demandado</span>
+      <span class="vl mono" id="cierre-servicio">—</span></div>
+    <div class="cierre-fila"><span class="et">Deuda acumulada</span>
+      <span class="vl mono c-bkl" id="cierre-deuda">—</span></div>
+
+    <div class="tendencia" id="cierre-tendencia"></div>
+
+    <div class="cierre-fila"><span class="et">Flota para el mes que entra</span>
+      <span class="vl mono" id="cierre-flota">—</span></div>
+
+    <button class="primario" id="btn-seguir" style="width:100%;margin-top:12px">
+      Seguir al mes siguiente
+    </button>
+  </div>
+</div>
+
 <!-- ============ PAUSA ============ -->
 <div class="overlay oculto" id="overlay-pausa">
   <div class="card" style="text-align:center">
@@ -398,7 +440,13 @@
    la simulación offline (ver skill offline-balance-simulation). */
 const CONFIG = {
   // --- Reproducibilidad ---
+  // `seed` es la semilla de PRUEBAS: los criterios de aceptación corren siempre
+  // con ella. La PARTIDA usa una semilla semanal (ver `semillaDeLaSemana`), para
+  // que el año cambie cada semana pero sea el mismo para todos los que juegan
+  // esa semana. Sin eso, a la tercera partida te sabes dónde caen los shocks.
   seed: 42,
+  semillaSemanal: true,
+  semillaMaxIntentos: 24,   // candidatas a probar antes de rendirse al curar
   contrafactualSeed: 1337,   // flujo propio para los incidentes del contrafactual
 
   // --- Reloj ---
@@ -421,9 +469,22 @@ const CONFIG = {
   demandAmp: 300,
   peakDay: 350,
   noiseRange: 50,
-  shockProb: 0.05,
+  // Los shocks son REGÍMENES que duran varios días, no picos de un día. Con
+  // un día de duración y 7 de espera para contratar, la respuesta óptima a
+  // cualquier shock era siempre ignorarlo: no había ninguna decisión que tomar.
+  shockStartProb: 0.022,
+  shockMinDays: 3, shockMaxDays: 12,
   shockDownMin: 0.3, shockDownRange: 0.3,
   shockUpMin: 1.5,   shockUpRange: 0.7,
+
+  // Flujos de RNG independientes. Antes todo salía de un solo generador, así
+  // que el lazo de incidentes —cuyo número de llamadas depende del tamaño de la
+  // flota— corría el ruido y los shocks de todos los días siguientes: dos
+  // jugadores con decisiones distintas enfrentaban AÑOS distintos y el ranking
+  // comparaba peras con manzanas. Separados, la serie de demanda depende sólo
+  // de la semilla.
+  shockSeedXor: 0x9E3779B9,
+  incidentSeedXor: 0x85EBCA6B,
 
   // --- Palanca del jugador ---
   fleetMin: 1, fleetMax: 30, fleetStart: 10,
@@ -434,17 +495,27 @@ const CONFIG = {
   // de aceptación. Lo que cambian es qué tan libre es mover la palanca y
   // cuándo se acaba la partida. Calibradas con verify_balance.py --duro.
   duro: {
-    // El modo correcto del juego es el clásico: el modelo económico puro, que
-    // es el que verifican los criterios de aceptación. El modo duro queda como
-    // variante opcional que se activa desde el menú.
-    activo: false,
+    // Éstas SON las reglas del juego, no una variante opcional.
+    //
+    // Sin ellas la palanca es gratis e instantánea, y entonces no hay ninguna
+    // decisión que tomar: basta leer la demanda y copiarla. Con costo y espera
+    // para contratar, la pregunta pasa a ser "¿esto es tendencia o ruido?" y
+    // "¿cuánto me adelanto?", que es el aprendizaje que el juego persigue.
+    //
+    // Los criterios de aceptación corren el modelo económico puro, sin esta
+    // capa, así que ponerla en `false` sigue sirviendo para verificar.
+    activo: true,
     leadTimeDays: 7,      // los camiones contratados tardan en llegar: hay que anticipar
-    hireCost: 600,        // contratar cuesta: mover la flota a cada rato se paga
-    fireCost: 300,        // despedir también cuesta
+    // Recalibrados tras los shocks con duración: con 600/300 los regímenes
+    // obligaban a mover tanto la flota que el costo de mover se comía la
+    // ventaja de adaptarse, y adaptarse apenas empataba con la mejor flota fija.
+    hireCost: 400,        // contratar cuesta: mover la flota a cada rato se paga
+    fireCost: 200,        // despedir también cuesta
     pisoCaja: -25000,     // si el balance acumulado cae de aquí, quiebras
     deudaMaxDias: 30,     // deuda mayor a N días de tu capacidad...
-    graciaDias: 5,        // ...durante este tanto de días seguidos: pierdes el contrato
-    balanceObjetivo: 50000 // vara para "ganaste" en modo duro
+    graciaDias: 5         // ...durante este tanto de días seguidos: pierdes el contrato
+    // (No hay "balance objetivo": la vara para ganar se calcula por semilla,
+    //  como la mejor flota fija posible de ese año. Ver `mejorFlotaFija`.)
   },
 
   // --- Política adaptativa de referencia (criterios de aceptación) ---
@@ -464,11 +535,15 @@ const CONFIG = {
   },
 
   // --- Presentación ---
-  balanceObjetivo: 83925,    // modo clásico: mejor flota fija con la semilla por defecto
   avisoFraccion: 0.6,        // a qué fracción del piso de caja empieza la alerta roja
   gaugeMaxDias: 8,           // tope del velocímetro, en "días de flota completa" de deuda
   gaugeZonaOk: 0.25, gaugeZonaWarn: 0.6,
   chartAltoVivo: 300, chartAltoResultados: 240,
+
+  // Cierre de mes: doce pausas con estado de resultados. Concentra las
+  // decisiones en momentos legibles en vez de dejar tramos largos donde el
+  // jugador mira sin decidir nada.
+  cierreMes: { activo: true },
 
   // --- Ciudad pixel art, vista aérea (coordenadas en "pixeles de arte") ---
   // El plano NO es una simulación espacial: la economía sigue sin geografía.
@@ -526,16 +601,18 @@ const CONFIG = {
   monthDays: [31,28,31,30,31,30,31,31,30,31,30,31],
 
   // --- Fixtures del spec: números ya verificados por simulación offline ---
+  // Recalculados tras separar los flujos de RNG y dar duración a los shocks.
+  // El óptimo entre flotas fijas se movió de N=10 a N=11 y sigue siendo
+  // interior: N=10 y N=12 rinden menos, que es la propiedad que da tensión.
   criteriosAceptacion: [
-    { etiqueta: "Flota fija N=6",  N: 6,  balance: 49943 },
-    { etiqueta: "Flota fija N=9",  N: 9,  balance: 76325 },
-    { etiqueta: "Flota fija N=10", N: 10, balance: 83925, servicio: 78.3, backlog: 38097 },
-    { etiqueta: "Flota fija N=11", N: 11, balance: 82504 },
-    { etiqueta: "Flota fija N=20", N: 20, balance: -50714 }
+    { etiqueta: "Flota fija N=6",  N: 6,  balance: 50025 },
+    { etiqueta: "Flota fija N=10", N: 10, balance: 84431 },
+    { etiqueta: "Flota fija N=11", N: 11, balance: 89394, servicio: 81.7, backlog: 33636 },
+    { etiqueta: "Flota fija N=12", N: 12, balance: 78419 },
+    { etiqueta: "Flota fija N=20", N: 20, balance: -34439 }
   ],
-  // Corregido contra el spec tras reproducir el modelo offline (ver HANDOFF.md).
   criterioAdaptativo: { etiqueta: "Política adaptativa (media móvil 14d)",
-                        balance: 103390, servicio: 95.3, flota: 12.345 },
+                        balance: 108013, servicio: 95.6, flota: 12.718 },
   toleranciaBalance: 1,      // $ de tolerancia por redondeo de punto flotante
   toleranciaInvariante: 1e-6
 };
@@ -551,18 +628,98 @@ function mulberry32(a) {
   }
 }
 
-/* Demanda del día. `dia` es índice base 0 (0 = 1 de enero, 364 = 31 de dic).
-   Orden de consumo de rng(), crítico para reproducibilidad, NO reordenar:
-   1) ruido, 2) chequeo de shock, 3) dirección del shock, 4) magnitud. */
-function demandaDelDia(dia, rng) {
-  const c = CONFIG;
-  let d = c.demandBase + c.demandAmp * Math.cos(2 * Math.PI * (dia - c.peakDay) / c.yearDays);
-  d += (rng() - 0.5) * c.noiseRange;
-  if (rng() < c.shockProb) {
-    if (rng() < 0.5) d *= c.shockDownMin + rng() * c.shockDownRange;
-    else             d *= c.shockUpMin   + rng() * c.shockUpRange;
+/* Semana ISO de una fecha. Se usa UTC para que la semilla no cambie según la
+   zona horaria del jugador. */
+function semanaISO(fecha) {
+  const t = new Date(Date.UTC(fecha.getFullYear(), fecha.getMonth(), fecha.getDate()));
+  const dia = t.getUTCDay() || 7;              // domingo = 7, no 0
+  t.setUTCDate(t.getUTCDate() + 4 - dia);      // jueves de esa semana
+  const inicio = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return { anio: t.getUTCFullYear(),
+           semana: Math.ceil(((t - inicio) / 86400000 + 1) / 7) };
+}
+
+/* Mezcla determinista de (año, semana, intento). Sin ella, semanas contiguas
+   producirían años casi idénticos. */
+function semillaDeLaSemana(fecha, intento) {
+  const { anio, semana } = semanaISO(fecha || new Date());
+  let h = ((anio * 100 + semana) * 97 + (intento || 0)) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+  return (h ^ (h >>> 16)) >>> 0;
+}
+
+/* No toda semilla da un año jugable. Si NINGUNA flota fija sobrevive, no hay
+   contra qué medir al jugador y el puntaje pierde sentido; si la mejor flota
+   fija ya gana muchísimo, adaptarse aporta poco. Se prueban candidatas de la
+   misma semana hasta encontrar una con baseline real. Es determinista, así que
+   todos los que juegan esa semana caen en la misma. */
+function semillaCurada(fecha) {
+  for (let intento = 0; intento < CONFIG.semillaMaxIntentos; intento++) {
+    const s = semillaDeLaSemana(fecha, intento);
+    const base = mejorFlotaFija(s);
+    if (base.N !== null && base.balance > 0) return s;
   }
-  return Math.max(0, Math.round(d));
+  return semillaDeLaSemana(fecha, 0);   // ninguna cumplió: se usa la primera
+}
+
+function etiquetaSemana(fecha) {
+  const { anio, semana } = semanaISO(fecha || new Date());
+  return anio + '-S' + String(semana).padStart(2, '0');
+}
+
+/* Semilla con la que se juega. Se memoiza: curarla cuesta unas decenas de
+   milisegundos y el resultado no cambia dentro de la misma semana. */
+let _semillaMemo = null;
+function semillaActiva() {
+  if (!CONFIG.semillaSemanal) return CONFIG.seed;
+  if (_semillaMemo === null) _semillaMemo = semillaCurada(new Date());
+  return _semillaMemo;
+}
+
+/* Crea el generador de demanda del año. `dia` es índice base 0 (0 = 1 de enero,
+   364 = 31 de dic). Guarda su propio estado porque los shocks duran varios días.
+
+   Consume DOS flujos de RNG que no dependen de las decisiones del jugador, así
+   que la serie de demanda queda fijada por la semilla y es idéntica para todos
+   los que jueguen esa semilla. Orden de consumo, NO reordenar:
+     rngRuido : 1 llamada por día.
+     rngShock : 1 llamada por día para el chequeo y, si arranca un régimen,
+                3 más (dirección, magnitud, duración). */
+function crearDemanda(seed) {
+  const c = CONFIG;
+  const rngRuido = mulberry32(seed);
+  const rngShock = mulberry32(seed ^ c.shockSeedXor);
+  let restantes = 0, mult = 1;
+
+  return function (dia) {
+    let d = c.demandBase + c.demandAmp * Math.cos(2 * Math.PI * (dia - c.peakDay) / c.yearDays);
+    d += (rngRuido() - 0.5) * c.noiseRange;
+
+    if (restantes > 0) {
+      // Régimen en curso: el jugador no sabe cuántos días le quedan.
+      d *= mult;
+      restantes--;
+    } else if (rngShock() < c.shockStartProb) {
+      mult = rngShock() < 0.5
+        ? c.shockDownMin + rngShock() * c.shockDownRange
+        : c.shockUpMin   + rngShock() * c.shockUpRange;
+      const dur = c.shockMinDays +
+                  Math.floor(rngShock() * (c.shockMaxDays - c.shockMinDays + 1));
+      d *= mult;
+      restantes = dur - 1;
+    }
+    return Math.max(0, Math.round(d));
+  };
+}
+
+/* Empaqueta las dos fuentes de azar de una partida: la demanda (que sólo
+   depende de la semilla) y los incidentes (que dependen de cuántos camiones
+   despachas). Separarlas es lo que hace que dos jugadores de la misma semilla
+   vivan el mismo año. */
+function crearFuente(seed) {
+  const s = seed === undefined ? CONFIG.seed : seed;
+  return { demanda: crearDemanda(s), rng: mulberry32(s ^ CONFIG.incidentSeedXor) };
 }
 
 /* Ejecuta un día ya conocida la demanda. Se separó de la generación de demanda
@@ -643,9 +800,9 @@ function nuevoAcumulador() {
 /* Avanza un día sobre el acumulador y devuelve el detalle del día.
    `demandaForzada` sirve al contrafactual, que re-juega el año con la serie de
    demanda que el jugador ya vio en vez de generar una nueva. */
-function avanzarDia(acc, N, rng, demandaForzada, costoExtra) {
-  const demanda = demandaForzada !== undefined ? demandaForzada : demandaDelDia(acc.dia, rng);
-  const r = ejecutarDia(demanda, N, acc.backlog, rng);
+function avanzarDia(acc, N, fuente, demandaForzada, costoExtra) {
+  const demanda = demandaForzada !== undefined ? demandaForzada : fuente.demanda(acc.dia);
+  const r = ejecutarDia(demanda, N, acc.backlog, fuente.rng);
 
   acc.backlog = r.backlogManana;
   acc.ingreso += r.ingreso; acc.costo += r.costo + (costoExtra || 0);
@@ -666,14 +823,14 @@ function avanzarDia(acc, N, rng, demandaForzada, costoExtra) {
    - opts.demandas: si viene, se re-usa esa serie en vez de generarla (contrafactual).
    - opts.seed: semilla del flujo aleatorio. */
 function simularAnio(opts) {
-  const rng = mulberry32(opts.seed !== undefined ? opts.seed : CONFIG.seed);
+  const fuente = crearFuente(opts.seed);
   const acc = nuevoAcumulador();
   // Si viene una serie de demanda (contrafactual), se corre exactamente tantos
   // días como haya: una partida que terminó antes por quiebra dura menos de 365.
   const dias = opts.demandas ? opts.demandas.length : CONFIG.yearDays;
   for (let dia = 0; dia < dias; dia++) {
     const N = opts.politica(dia, acc.hist, acc.backlog);
-    avanzarDia(acc, N, rng, opts.demandas ? opts.demandas[dia] : undefined);
+    avanzarDia(acc, N, fuente, opts.demandas ? opts.demandas[dia] : undefined);
   }
   return resumen(acc);
 }
@@ -767,6 +924,47 @@ function revisarFin(acc, ef) {
   return null;
 }
 
+/* Corre un año completo BAJO LAS REGLAS DEL JUEGO (lead time, costo de
+   contratar y despedir, quiebra y pérdida de contrato). Es distinto de
+   `simularAnio`, que corre el modelo económico puro y es lo que verifican los
+   criterios de aceptación.
+
+   Hace falta para calcular el baseline del puntaje: comparar al jugador contra
+   una flota fija del modelo puro sería injusto, porque esa flota no paga el
+   arranque ni las contrataciones que el jugador sí paga. */
+function simularAnioDuro(politica, seed) {
+  const fuente = crearFuente(seed);
+  const acc = nuevoAcumulador();
+  const ef = nuevoEstadoFlota();
+
+  for (let dia = 0; dia < CONFIG.yearDays; dia++) {
+    ef.objetivo = politica(dia, acc.hist, acc.backlog, ef.activos);
+    const extra = resolverOrdenes(ef, dia);
+    avanzarDia(acc, ef.activos, fuente, undefined, extra);
+    if (revisarFin(acc, ef)) break;
+  }
+  const r = resumen(acc);
+  r.fin = ef.fin;
+  return r;
+}
+
+/* Mejor flota fija posible de esta semilla, jugada con las mismas reglas que el
+   jugador. Es el baseline del puntaje: "cuánto ganaste por adaptarte" es
+   exactamente el objetivo de aprendizaje 3 convertido en marcador.
+   Sólo cuentan las flotas que sobreviven el año: una que quiebra en el día 150
+   no es una estrategia contra la cual medirse. */
+function mejorFlotaFija(seed) {
+  let mejor = null;
+  for (let N = CONFIG.fleetMin; N <= CONFIG.fleetMax; N++) {
+    const r = simularAnioDuro(() => N, seed);
+    if (r.fin) continue;
+    if (!mejor || r.balance > mejor.balance) mejor = { N, balance: r.balance };
+  }
+  // Si ninguna flota fija sobrevive, el baseline es cero: cualquier año
+  // completado ya es mejor que todas.
+  return mejor || { N: null, balance: 0 };
+}
+
 /* Políticas de referencia usadas por los criterios de aceptación. */
 const POLITICAS = {
   fija(N) { return () => N; },
@@ -832,19 +1030,25 @@ const fmtCajas  = v => Math.round(v).toLocaleString("es-MX");
 /* --------------------------------------------------------------------------
    Estado global de la partida
    -------------------------------------------------------------------------- */
-const ESTADOS = { MENU: 'MENU', JUGANDO: 'JUGANDO', PAUSA: 'PAUSA', RESULTADOS: 'RESULTADOS' };
+const ESTADOS = { MENU: 'MENU', JUGANDO: 'JUGANDO', PAUSA: 'PAUSA',
+                 CIERRE: 'CIERRE', RESULTADOS: 'RESULTADOS' };
 let estado = ESTADOS.MENU;
 let pausadoPorPestana = false;
 
 let P = null;              // partida en curso
 let ultimoResumen = null;  // resumen del año cerrado (para redibujar en resize)
+let ultimoPuntaje = null;  // { puntaje, base } del año cerrado
 
 function nuevaPartida() {
   return {
-    rng: mulberry32(CONFIG.seed),
+    semilla: semillaActiva(),
+    fuente: crearFuente(semillaActiva()),
     acc: nuevoAcumulador(),   // toda la economía vive en el núcleo, no aquí
     ef: nuevoEstadoFlota(),   // camiones activos, pedidos en camino, fin de partida
     ultimoDia: null,          // resultado del día recién simulado (para la ciudad)
+    mes: nuevoMes(0),         // acumuladores del mes en curso
+    mesPrevio: null,          // para la flecha de tendencia del cierre
+    cierrePendiente: null,    // mes cerrado esperando que el jugador lo vea
     velocidad: CONFIG.velocidades[0],
     acumMs: 0,                // acumulador de tiempo real dentro del día actual
     animMs: 0,                // reloj de animación: tiempo real SIN multiplicar
@@ -852,6 +1056,17 @@ function nuevaPartida() {
                               // igual de legibles a 1x que a 10x
     ultimoFrame: 0
   };
+}
+
+function nuevoMes(indice) {
+  return { indice, ingreso: 0, costo: 0, ociosos: 0, demanda: 0, entregado: 0, dias: 0 };
+}
+
+/* Mes (0-11) al que pertenece un día del año. */
+function mesDeDia(dia) {
+  let d = dia, m = 0;
+  while (m < 11 && d >= CONFIG.monthDays[m]) { d -= CONFIG.monthDays[m]; m++; }
+  return m;
 }
 
 /* Camiones que realmente puedes despachar hoy (≠ los que pediste). */
@@ -866,6 +1081,7 @@ function irA(nuevo, motivo) {
   $('pantalla-juego').classList.toggle('oculto', nuevo !== ESTADOS.JUGANDO && nuevo !== ESTADOS.PAUSA);
   $('pantalla-resultados').classList.toggle('oculto', nuevo !== ESTADOS.RESULTADOS);
   $('overlay-pausa').classList.toggle('oculto', nuevo !== ESTADOS.PAUSA);
+  $('overlay-cierre').classList.toggle('oculto', nuevo !== ESTADOS.CIERRE);
   if (nuevo === ESTADOS.PAUSA) $('pausa-motivo').textContent = motivo || 'El año está detenido.';
   if (nuevo === ESTADOS.JUGANDO) P.ultimoFrame = performance.now();
   $('btn-pausa').textContent = nuevo === ESTADOS.PAUSA ? 'Reanudar' : 'Pausa';
@@ -913,6 +1129,19 @@ function estadoJugando() {
 }
 
 function estadoPausa(motivo) { if (estado === ESTADOS.JUGANDO) irA(ESTADOS.PAUSA, motivo); }
+
+/* Cierre de mes: se detiene el año y se muestra el estado de resultados del mes
+   que acaba de terminar. Es el momento en el que el jugador decide la flota del
+   mes siguiente con la información ya consolidada. */
+function estadoCierre() {
+  pintarCierre(P.cierrePendiente);
+  irA(ESTADOS.CIERRE);
+}
+
+function cerrarMesYSeguir() {
+  P.cierrePendiente = null;
+  irA(ESTADOS.JUGANDO);
+}
 function estadoReanudar()    { if (estado === ESTADOS.PAUSA)   irA(ESTADOS.JUGANDO); }
 
 function estadoResultados() {
@@ -926,9 +1155,30 @@ function estadoResultados() {
    -------------------------------------------------------------------------- */
 function tickDia() {
   const extra = resolverOrdenes(P.ef, P.acc.dia);
-  P.ultimoDia = avanzarDia(P.acc, P.ef.activos, P.rng, undefined, extra);
-  aplicarEstadosCamion(P.ultimoDia.estadoCamion);
+  const u = avanzarDia(P.acc, P.ef.activos, P.fuente, undefined, extra);
+  P.ultimoDia = u;
+
+  // Acumuladores del mes, para el estado de resultados del cierre.
+  P.mes.ingreso += u.ingreso;
+  P.mes.costo += u.costo + extra;
+  P.mes.ociosos += u.camionesOciosos;
+  P.mes.demanda += u.demanda;
+  P.mes.entregado += u.entregado;
+  P.mes.dias++;
+
+  aplicarEstadosCamion(u.estadoCamion);
   revisarFin(P.acc, P.ef);
+
+  // ¿Cambió el mes? Se cierra el anterior y se deja pendiente de mostrar.
+  if (CONFIG.cierreMes.activo && !P.ef.fin && P.acc.dia < CONFIG.yearDays) {
+    const m = mesDeDia(P.acc.dia);
+    if (m !== P.mes.indice) {
+      P.cierrePendiente = P.mes;
+      P.mesPrevio = P.mes;
+      P.mes = nuevoMes(m);
+    }
+  }
+
   pintarHUD();
   dibujarChartVivo();
 }
@@ -947,11 +1197,13 @@ function bucle(ahora) {
   P.animMs += dt;                 // reloj de la animación: no
 
   const msPorDia = CONFIG.gameMs / CONFIG.yearDays;
-  while (P.acumMs >= msPorDia && P.acc.dia < CONFIG.yearDays && !P.ef.fin) {
+  while (P.acumMs >= msPorDia && P.acc.dia < CONFIG.yearDays &&
+         !P.ef.fin && !P.cierrePendiente) {
     P.acumMs -= msPorDia;
     tickDia();
   }
   if (P.acc.dia >= CONFIG.yearDays || P.ef.fin) { estadoResultados(); return; }
+  if (P.cierrePendiente) { estadoCierre(); return; }
 
   frameAnim++;
   dibujarCiudad(P.animMs);
@@ -1211,6 +1463,68 @@ function pintarHUD() {
 }
 
 /* --------------------------------------------------------------------------
+   Cierre de mes. Doce paradas que convierten "no pasa nada" en doce decisiones
+   con la información ya consolidada: cuánto costó la flota ociosa, cómo va la
+   deuda y hacia dónde se mueve la temporada.
+   -------------------------------------------------------------------------- */
+function pintarCierre(mes) {
+  const utilidad = mes.ingreso - mes.costo;
+  const nombre = CONFIG.monthNames[mes.indice];
+
+  $('cierre-titulo').textContent = 'Cerró ' + nombre;
+  $('cierre-sub').textContent = mes.dias + ' días de operación';
+  $('cierre-utilidad').textContent = fmtDinero(utilidad);
+  $('cierre-utilidad').className = 'util mono ' + (utilidad >= 0 ? 'pos' : 'neg');
+
+  $('cierre-ingreso').textContent = fmtDinero(mes.ingreso);
+  $('cierre-costo').textContent   = fmtDinero(mes.costo);
+
+  // El costo del ocio es el objetivo de aprendizaje 1, en pesos y cada mes.
+  const costoOcio = mes.ociosos * CONFIG.fixedCostPerTruck;
+  $('cierre-ociosos').innerHTML = mes.ociosos > 0
+    ? mes.ociosos + ' <span class="nota">(' + fmtDinero(costoOcio) + ' tirados)</span>'
+    : '0';
+
+  // Entregado y demandado por separado, NO un "nivel de servicio" del mes: lo
+  // entregado incluye deuda vieja, así que el cociente pasa de 100% cuando vas
+  // pagando atrasos y se leería como un porcentaje imposible.
+  $('cierre-servicio').innerHTML = fmtCajas(mes.entregado) + ' / ' + fmtCajas(mes.demanda) +
+    (mes.entregado > mes.demanda + 0.5
+      ? ' <span class="nota">(bajando deuda)</span>'
+      : (mes.entregado < mes.demanda - 0.5 ? ' <span class="nota">(acumulando)</span>' : ''));
+
+  const diasDeuda = P.ef.activos > 0 ? P.acc.backlog / (P.ef.activos * CONFIG.K) : 0;
+  $('cierre-deuda').textContent = fmtCajas(P.acc.backlog) + ' cajas · ' +
+                                  diasDeuda.toFixed(1) + ' días de flota';
+
+  // Tendencia de la temporada: se compara la demanda diaria promedio de este
+  // mes contra la del anterior. Es la señal para decidir si adelantarse.
+  const promHoy = mes.dias > 0 ? mes.demanda / mes.dias : 0;
+  const prev = P.mesAnterior;
+  let txt;
+  if (!prev || prev.dias === 0) {
+    txt = 'Demanda promedio de <b>' + fmtCajas(promHoy) + ' cajas/día</b>. ' +
+          'Todavía no hay mes anterior con qué compararla.';
+  } else {
+    const promPrev = prev.demanda / prev.dias;
+    const cambio = promPrev > 0 ? 100 * (promHoy - promPrev) / promPrev : 0;
+    const flecha = cambio > 3 ? '▲' : (cambio < -3 ? '▼' : '▬');
+    txt = flecha + ' Demanda promedio: <b>' + fmtCajas(promHoy) + ' cajas/día</b>, ' +
+          (Math.abs(cambio) < 3
+            ? 'estable respecto a ' + CONFIG.monthNames[prev.indice] + '.'
+            : (cambio > 0 ? 'subió ' : 'bajó ') + Math.abs(cambio).toFixed(0) +
+              '% contra ' + CONFIG.monthNames[prev.indice] + '.') +
+          ' Contratar tarda <b>' + CONFIG.duro.leadTimeDays + ' días</b>.';
+  }
+  $('cierre-tendencia').innerHTML = txt;
+  P.mesAnterior = mes;
+
+  const enCamino = camionesEnCamino(P.ef);
+  $('cierre-flota').textContent = P.ef.activos + ' activos' +
+    (enCamino > 0 ? ' · ' + enCamino + ' en camino' : '');
+}
+
+/* --------------------------------------------------------------------------
    Efecto marginal de la palanca. Sin esto, el jugador mueve el número de
    camiones a ciegas: ve el balance moverse, pero no sabe si le faltó o le
    sobró capacidad, ni cuánto tiene que mover un camión para pagarse solo.
@@ -1235,13 +1549,12 @@ function pintarMarginal(u) {
   if (!u) { el.textContent = 'Esperando el primer día…'; return; }
 
   if (u.demandaNoAtendida > 0.5) {
-    // Te estás atrasando MÁS hoy: la referencia es la demanda del día, no la
-    // deuda entera (liquidarla de golpe pediría una flota absurda).
-    const faltan = Math.ceil(u.demandaNoAtendida / CONFIG.K);
+    // Se dice QUÉ pasó, no CUÁNTOS camiones faltan. Decir el número convertía
+    // el juego en copiar un dato: la decisión de cuánto adelantarse es del
+    // jugador, y con 7 días de espera para contratar es la decisión central.
     caja.classList.add('falta');
     el.innerHTML = 'No cupieron <b>' + fmtCajas(u.demandaNoAtendida) +
-      ' cajas</b> de hoy: se van a la deuda. Te falta' + (faltan === 1 ? '' : 'n') +
-      ' <b>' + faltan + ' ' + plCamion(faltan) + '</b> para dejar de atrasarte.';
+      ' cajas</b> de hoy: se van a la deuda.';
   } else if (u.deudaAtendida > 0.5) {
     // Vas ganando terreno: aquí el camión extra sí se traduce en deuda pagada.
     el.innerHTML = 'Cubriste hoy y bajaste <b>' + fmtCajas(u.deudaAtendida) +
@@ -1449,16 +1762,19 @@ function dibujarChartResultados(r) {
 /* --------------------------------------------------------------------------
    Resultados + contrafactual
    -------------------------------------------------------------------------- */
-/* Vara para "ganaste": cambia entre modo duro y clásico. */
-function varaGanar() {
-  return CONFIG.duro.activo ? CONFIG.duro.balanceObjetivo : CONFIG.balanceObjetivo;
-}
-
 function pintarResultados(r) {
   const fin = P ? P.ef.fin : null;             // 'caja' | 'contrato' | null
-  const vara = varaGanar();
-  const gano = !fin && r.balance >= vara;
   const dia = P ? P.acc.dia : CONFIG.yearDays;
+
+  // La vara NO es una cifra fija: es la mejor flota fija posible de ESTA
+  // semilla, jugada con las mismas reglas. Así el veredicto significa lo mismo
+  // en cualquier semana, y ganar es literalmente "adaptarse rindió más que
+  // elegir bien una sola vez", que es el objetivo de aprendizaje 3.
+  const base = mejorFlotaFija(P.semilla);
+  const puntaje = Math.round(r.balance - base.balance);
+  ultimoPuntaje = { puntaje, base };
+  const gano = !fin && puntaje > 0;
+  const vara = base.balance;
 
   let veredicto, color, frase;
   if (fin === 'caja') {
@@ -1481,11 +1797,13 @@ function pintarResultados(r) {
   } else if (gano) {
     veredicto = '¡Ganaste!';
     color = 'var(--ok)';
-    frase = 'Superaste la vara de ' + fmtDinero(vara) + ' sin quebrar ni perder el contrato.';
+    frase = 'Le sacaste ' + fmtDinero(puntaje) + ' a la mejor flota fija posible de esta ' +
+            'semana (' + base.N + ' camiones, ' + fmtDinero(vara) + '). Adaptarte rindió.';
   } else {
     veredicto = 'Sobreviviste';
     color = 'var(--warn)';
-    frase = 'Llegaste al 31 de diciembre en positivo, pero por debajo de ' + fmtDinero(vara) + '.';
+    frase = 'Llegaste al 31 de diciembre, pero ' + fmtDinero(-puntaje) + ' por debajo de lo ' +
+            'que habrías ganado dejando ' + base.N + ' camiones fijos todo el año.';
   }
 
   $('res-veredicto').textContent = veredicto;
@@ -1498,6 +1816,15 @@ function pintarResultados(r) {
   $('res-eficiencia').textContent = r.eficiencia.toFixed(1);
   $('res-flota').textContent      = r.flotaPromedio.toFixed(1);
   $('res-backlog').textContent    = fmtCajas(r.backlogFinal);
+  // Si el año no se terminó, la ventaja no es comparable: el baseline sí jugó
+  // los 365 días. Se muestra el dato pero sin presentarlo como logro.
+  $('res-puntaje').textContent = fin ? '—' : fmtDinero(puntaje);
+  $('res-puntaje').style.color = fin
+    ? 'var(--tx3)' : (puntaje >= 0 ? 'var(--ok)' : 'var(--bad)');
+  $('res-puntaje-det').textContent = fin
+    ? 'el año no se terminó'
+    : (base.N ? 'contra ' + base.N + ' camiones fijos'
+              : 'ninguna flota fija sobrevive esta semana');
 
   // Contrafactual: misma serie de demanda, flota fija = promedio del jugador.
   const Nfijo = Math.max(CONFIG.fleetMin,
@@ -1586,8 +1913,16 @@ function lbGuardarLocal(entradas) {
 
 /* Orden del ranking: el balance manda, porque es el marcador del juego. Los
    desempates premian al que además dio mejor servicio y dejó menos deuda. */
+/* Se ordena por PUNTAJE, no por balance: con semilla semanal el balance crudo
+   no es comparable entre semanas (unos años dan más margen que otros), pero
+   "cuánto le sacaste a la mejor flota fija de tu semana" sí lo es.
+
+   Antes del puntaje va si el año se terminó: quien quebró en marzo puede tener
+   un balance parcial alto y una "ventaja" positiva contra un baseline de año
+   completo, pero no jugó el mismo juego. Los años completos van primero. */
 function lbOrdenar(a, b) {
-  return (b.balance - a.balance)
+  return ((a.fin ? 1 : 0) - (b.fin ? 1 : 0))
+      || ((b.puntaje || 0) - (a.puntaje || 0))
       || (b.servicio - a.servicio)
       || (a.deudaFinal - b.deudaFinal);
 }
@@ -1597,7 +1932,7 @@ function lbOrdenar(a, b) {
    de la misma partida (la local y la que devuelve el servidor) tienen que
    reconocerse como una sola. */
 function lbHuella(e) {
-  return [e.nombre, e.balance, e.servicio, e.deudaFinal, e.dias, e.modo, e.fecha].join('|');
+  return [e.nombre, e.balance, e.puntaje, e.servicio, e.deudaFinal, e.dias, e.fecha].join('|');
 }
 
 /* Fusiona dos rankings en vez de que uno pise al otro.
@@ -1646,24 +1981,26 @@ function lbPintar(contenedorId, resaltar) {
     }
     const filas = lb.map((e, i) => {
       const yo = resaltar && e.nombre === resaltar ? ' class="yo"' : '';
-      const modo = e.modo === 'duro'
-        ? '<span class="lb-modo duro">duro</span>'
-        : '<span class="lb-modo">clásico</span>';
       // Una partida que terminó antes de tiempo se marca: no es lo mismo
       // cerrar el año que quebrar en el día 150 con un balance parecido.
       const cierre = e.fin
         ? '<span class="lb-modo duro">' + (e.fin === 'caja' ? 'quiebra' : 'sin contrato') +
           ' d' + e.dias + '</span>'
         : '<span class="lb-modo">año completo</span>';
+      const pts = e.puntaje || 0;
       return '<tr' + yo + '><td>' + (i + 1) + '</td>' +
         '<td>' + lbEscapar(e.nombre) + '</td>' +
-        '<td class="mono"><b>' + fmtDinero(e.balance) + '</b></td>' +
+        '<td class="mono"><b style="color:' + (pts >= 0 ? 'var(--ok)' : 'var(--bad)') + '">' +
+          fmtDinero(pts) + '</b></td>' +
+        '<td class="mono">' + fmtDinero(e.balance) + '</td>' +
         '<td class="mono">' + e.servicio.toFixed(1) + '%</td>' +
         '<td class="mono">' + e.flotaPromedio.toFixed(1) + '</td>' +
-        '<td>' + modo + '</td><td>' + cierre + '</td></tr>';
+        '<td><span class="lb-modo">' + (e.semana || '—') + '</span></td>' +
+        '<td>' + cierre + '</td></tr>';
     }).join('');
     el.innerHTML = '<table class="lb-table"><thead><tr><th>#</th><th>Nombre</th>' +
-      '<th>Balance</th><th>Servicio</th><th>Flota prom.</th><th>Modo</th><th>Cierre</th>' +
+      '<th>Ventaja</th><th>Balance</th><th>Servicio</th><th>Flota prom.</th>' +
+      '<th>Semana</th><th>Cierre</th>' +
       '</tr></thead><tbody>' + filas + '</tbody></table>';
   };
 
@@ -1701,7 +2038,10 @@ function lbEntrada(nombre, r) {
     dias: r.diasJugados,
     fin: P ? P.ef.fin : null,          // null | 'caja' | 'contrato'
     modo: CONFIG.duro.activo ? 'duro' : 'clasico',
-    semilla: CONFIG.seed,              // sin la misma semilla no son comparables
+    puntaje: ultimoPuntaje ? ultimoPuntaje.puntaje : 0,
+    baseN: ultimoPuntaje && ultimoPuntaje.base ? ultimoPuntaje.base.N : null,
+    semilla: P ? P.semilla : CONFIG.seed,
+    semana: etiquetaSemana(),
     fecha: new Date().toISOString().slice(0, 10)
   };
 }
@@ -1739,7 +2079,6 @@ function cambiarFlota(n) {
   pintarHUD();
 }
 
-$('chk-duro').onchange = e => { CONFIG.duro.activo = e.target.checked; };
 $('btn-empezar').onclick  = estadoJugando;
 $('btn-tests').onclick    = pintarCriterios;
 $('btn-menos').onclick    = () => cambiarFlota(P.ef.objetivo - 1);
@@ -1747,6 +2086,7 @@ $('btn-mas').onclick      = () => cambiarFlota(P.ef.objetivo + 1);
 $('slider-flota').oninput = e => cambiarFlota(+e.target.value);
 $('btn-pausa').onclick    = () => estado === ESTADOS.PAUSA ? estadoReanudar() : estadoPausa();
 $('btn-reanudar').onclick = estadoReanudar;
+$('btn-seguir').onclick   = cerrarMesYSeguir;
 $('btn-guardar-score').onclick = guardarResultado;
 $('lb-nombre').onkeydown  = e => { if (e.key === 'Enter') guardarResultado(); };
 $('btn-otra').onclick     = estadoJugando;

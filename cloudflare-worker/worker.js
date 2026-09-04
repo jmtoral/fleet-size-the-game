@@ -97,10 +97,14 @@ export default {
   }
 };
 
-/* El balance es el marcador del juego; los desempates premian mejor servicio y
-   menos deuda. Debe coincidir con `lbOrdenar` de index.html. */
+/* Orden del ranking. Con semilla semanal el balance crudo no es comparable
+   entre semanas, así que manda el PUNTAJE: cuánto le sacó el jugador a la mejor
+   flota fija posible de su semana. Antes del puntaje va si el año se terminó,
+   porque un año truncado no jugó lo mismo que el baseline.
+   Debe coincidir con `lbOrdenar` de index.html. */
 function ordenar(a, b) {
-  return (b.balance - a.balance)
+  return ((a.fin ? 1 : 0) - (b.fin ? 1 : 0))
+      || ((b.puntaje || 0) - (a.puntaje || 0))
       || (b.servicio - a.servicio)
       || (a.deudaFinal - b.deudaFinal);
 }
@@ -125,6 +129,9 @@ function sanitizar(b) {
     dias: Math.round(acotar(num(b.dias), 0, 100000)),
     fin: ['caja', 'contrato'].includes(b.fin) ? b.fin : null,
     modo: b.modo === 'duro' ? 'duro' : 'clasico',
+    puntaje: Math.round(acotar(num(b.puntaje), -10000000, 10000000)),
+    baseN: Number.isFinite(Number(b.baseN)) ? Math.round(Number(b.baseN)) : null,
+    semana: typeof b.semana === 'string' ? b.semana.slice(0, 10) : null,
     semilla: Math.round(num(b.semilla, 42)),
     fecha: typeof b.fecha === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.fecha)
       ? b.fecha
